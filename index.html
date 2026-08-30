@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RaptorQR 彩色版 — 摄像头二维码文件传输</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; }
+  h1 { font-size: 28px; margin: 0; }
+  p { color: #8b949e; max-width: 640px; text-align: center; line-height: 1.7; margin: 0; }
+  a.btn { display: inline-block; padding: 14px 42px; font-size: 18px; color: #fff; background: #238636; border-radius: 8px; text-decoration: none; }
+  a.btn:hover { background: #2ea043; }
+  .tip { font-size: 13px; color: #6e7681; max-width: 560px; text-align: center; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>📷 RaptorQR 彩色版</h1>
+  <p>单文件离线应用：摄像头二维码 / 彩色 CimQR 高速传输。发送端播放彩色符号，接收端相机对准屏幕即可还原文件或文本。黑白 QR 模式完全兼容。</p>
+  <a class="btn" href="./RaptorQR_%E5%BD%A9%E8%89%B2%E7%89%88.html">打开应用</a>
+  <div class="tip">
+    手机端使用：打开后自动按 HTTPS 提供——相机、Worker、WASM 全部可用。<br/>
+    桌面端也可下载该 HTML 文件后双击离线使用（file:// 环境同样支持）。<br/>
+    传输上限：彩色模式 7229 B/帧（约为黑白 V10-L 的 34 倍）。
+  </div>
+</body>
+</html>
