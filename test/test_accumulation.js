@@ -5,13 +5,13 @@
 const fs = require('fs');
 const zlib = require('zlib');
 const vm = require('vm');
-const lib = fs.readFileSync('test_browser_e2e.js', 'utf8');
+const lib = fs.readFileSync(__dirname + '/test_browser_e2e.js', 'utf8');
 eval(lib.match(/function decodePNG[\s\S]*?\n}\n/)[0]);
-const C = require('./cimqr_codec.js');
+const C = require('../cimqr_codec.js');
 
 function makeWorkerSandbox(srcFile, postFn) {
   const src = fs.readFileSync(srcFile, 'utf8');
-  const wasmMapCode = fs.readFileSync('wasm_map_extracted.js', 'utf8');
+  const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
   const listeners = [], posted = [];
   const sandbox = {
     postMessage: postFn || ((msg) => posted.push(msg)),
@@ -48,7 +48,7 @@ function makeWorkerSandbox(srcFile, postFn) {
   // ---- 1) encode worker: 26KB 不可压缩随机字节（文件模式）→ 4 源符号 + 10% 修复 ≈ 5 包 ----
   const rnd = new Uint8Array(26000);
   for (let i = 0; i < rnd.length; i++) rnd[i] = (Math.random() * 256) | 0;
-  const enc = await makeWorkerSandbox('worker_encode_color.js');
+  const enc = await makeWorkerSandbox(__dirname + '/fixtures/worker_encode_color.js');
   const t0 = Date.now();
   enc.dispatch({ type: 'encode', data: rnd.buffer.slice(0), isText: false, compress: true, fecCodec: 'wasm-raptorq', symbolSize: 7229, raptorqRepairPercent: 10, filename: 'test.bin', mimeType: 'application/octet-stream' });
   const encoded = await new Promise((res, rej) => {
@@ -68,7 +68,7 @@ function makeWorkerSandbox(srcFile, postFn) {
   console.log(`渲染 ${frames.length} 帧完成`);
 
   // ---- 3) decode worker：按“慢解码器”场景喂帧——只喂部分帧、故意重复、乱序 ----
-  const dec = await makeWorkerSandbox('worker_decode_color.js');
+  const dec = await makeWorkerSandbox(__dirname + '/fixtures/worker_decode_color.js');
   dec.dispatch({ type: 'settings', settings: {}, fecCodec: 'auto' });
 
   // 播放顺序：fast-start = 源包在前，然后循环源+修复；模拟 30fps 下解码器只截获 ~60% 的帧

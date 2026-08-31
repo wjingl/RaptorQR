@@ -1,13 +1,13 @@
 // 并行=4 彩色端到端：真实浏览器 2176×2176 帧 → 真实 decode worker → 文件逐字节还原
 const fs = require('fs');
 const zlib = require('zlib');
-const lib = fs.readFileSync('test_browser_e2e.js', 'utf8');
+const lib = fs.readFileSync(__dirname + '/test_browser_e2e.js', 'utf8');
 eval(lib.match(/function decodePNG[\s\S]*?\n}\n/)[0]);
 const T = require('./test_tolerance.js');
 
 (async () => {
-  const cap = JSON.parse(fs.readFileSync('cdp_parallel.json', 'utf8'));
-  const expected = fs.readFileSync('rand_30k.bin');
+  const cap = JSON.parse(fs.readFileSync(__dirname + '/fixtures/cdp_parallel.json', 'utf8'));
+  const expected = fs.readFileSync(__dirname + '/fixtures/rand_30k.bin');
   console.log('并行帧数:', cap.frames.length, '(每帧 4 个彩色符号, 2176×2176)');
 
   const w = await T.makeDecodeWorker();

@@ -1,7 +1,6 @@
 # 临时/生成物（不入库）
-rand_30k.bin
-cdp_capture.json
-cdp_multipacket.json
+test/fixtures/cdp_*.json
+test/fixtures/rand_30k.bin
 *.dump.html
 *.log
 node_modules/
@@ -9,4 +8,3 @@ node_modules/
 send_manager/
 .zcode/
 AGENTS.md
-cdp_parallel.json

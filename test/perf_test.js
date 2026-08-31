@@ -2,8 +2,8 @@ const fs = require('fs');
 const zlib = require('zlib');
 const lib = fs.readFileSync('test_browser_e2e.js', 'utf8');
 eval(lib.match(/function decodePNG[\s\S]*?\n}\n/)[0]);
-const C = require('./cimqr_codec.js');
-const cap = JSON.parse(fs.readFileSync('cdp_capture.json', 'utf8'));
+const C = require('../cimqr_codec.js');
+const cap = JSON.parse(fs.readFileSync(__dirname + '/fixtures/cdp_capture.json', 'utf8'));
 const img = decodePNG(cap.frames[0]);
 
 // warmup

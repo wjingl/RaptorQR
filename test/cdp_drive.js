@@ -5,8 +5,8 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 
-const TARGET = process.argv[2] === 'orig' ? 'RaptorQR_离线单文件版.html' : 'RaptorQR_彩色版.html';
-const OUT_JSON = process.argv[2] === 'orig' ? 'cdp_orig_result.json' : 'cdp_capture.json';
+const TARGET = (process.argv[2] === 'orig' ? 'RaptorQR_离线单文件版.html' : 'RaptorQR_彩色版.html');
+const OUT_JSON = process.argv[2] === 'orig' ? 'cdp_orig_result.json' : __dirname + '/fixtures/cdp_capture.json';
 const PORT = 9300 + Math.floor(Math.random() * 200);
 const PROFILE = process.envTEMP || 'C:/Temp';
 

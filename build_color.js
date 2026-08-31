@@ -211,11 +211,11 @@ function checkWorker(name) {
   const m = s1.match(re);
   if (!m) throw new Error('worker ' + name + ' missing after build');
   const code = Buffer.from(m[1], 'base64').toString('utf8');
-  fs.writeFileSync('check_' + name + '.mjs', code);
+  fs.writeFileSync('test/fixtures/check_' + name + '.mjs', code);
   console.log('worker', name, 'extracted,', code.length, 'chars');
 }
 checkWorker('qr_render');
 checkWorker('gif');
 checkWorker('decode');
-fs.writeFileSync('check_bundle.mjs', s2);
+fs.writeFileSync('test/fixtures/check_bundle.mjs', s2);
 console.log('bundle extracted,', s2.length, 'chars');

@@ -87,8 +87,8 @@ function analyze(img) {
 
 // ---------- decode-worker harness ----------
 async function makeDecodeWorker() {
-  const src = fs.readFileSync('worker_decode_color.js', 'utf8');
-  const wasmMapCode = fs.readFileSync('wasm_map_extracted.js', 'utf8');
+  const src = fs.readFileSync(__dirname + '/fixtures/worker_decode_color.js', 'utf8');
+  const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
   const listeners = [], posted = [];
   const sandbox = {
     postMessage: (msg, transfer) => posted.push(msg),
@@ -128,7 +128,7 @@ async function makeDecodeWorker() {
 
 // ---------- main ----------
 (async () => {
-  const cap = JSON.parse(fs.readFileSync('cdp_capture.json', 'utf8'));
+  const cap = JSON.parse(fs.readFileSync(__dirname + '/fixtures/cdp_capture.json', 'utf8'));
   console.log('captured frames:', cap.frames.length, '| app status:', cap.appStatus || '(n/a)');
   const img = decodePNG(cap.frames[0]);
   const info = analyze(img);

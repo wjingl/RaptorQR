@@ -1,4 +1,4 @@
-const CimQR = require('./cimqr_codec.js');
+const CimQR = require('../cimqr_codec.js');
 // render a packet, then probe internals
 const packet = new Uint8Array(3000);
 for (let i = 0; i < packet.length; i++) packet[i] = (i * 31) & 255;

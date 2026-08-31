@@ -19,7 +19,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     '--headless=new', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1400,2400',
     '--allow-file-access-from-files',
-    'file:///W:/0_proj/QR_tran/RaptorQR_彩色版.html'
+    ('file:///' + __dirname.split(String.fromCharCode(92)).join('/') + '/../RaptorQR_彩色版.html')
   ], { stdio: 'ignore' });
 
   let targets = null;

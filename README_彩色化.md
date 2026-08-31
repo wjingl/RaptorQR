@@ -79,13 +79,28 @@ RaptorQ 解码 + 解压 → 文本 31499 字符与发送内容**逐字节一致*
 验证：并行=4 时画布 2176×2176、每帧显示 4 个彩色符号，接收端每帧解出其全部符号，
 30KB 文件 6 包（4+2 两帧）端到端逐字节还原（`cdp_parallel.js` + `test_parallel.js`）。
 
-## 构建
+## 目录结构
+```
+RaptorQR_彩色版.html / RaptorQR_离线单文件版.html   交付物（彩色版 / 黑白基线构建源）
+cimqr_codec.js   彩色编解码核心          build_color.js   构建脚本（codec 注入 worker + 修补 bundle）
+index.html / README.md   Pages 引导页与说明
+test/            全部测试与浏览器验证工具（test_*.js 套件、cdp_*.js 真实浏览器驱动、fixtures/ 测试数据与抽取 worker）
+archive/         分析中间产物（抽取/美化脚本、未修补 worker 源码）——仅存档，不参与构建与测试
+```
+
+## 构建与测试
 ```bash
-node build_color.js   # 重新生成 RaptorQR_彩色版.html
-node test_e2e.js      # 真实 RaptorQ 包裹包（头+CRC）端到端回路
-node cdp_drive.js     # 真实浏览器 UI 驱动 + 捕获（需 Edge）
-node --experimental-vm-modules test_browser_e2e.js   # 捕获帧 -> 出厂 worker 逐字节还原
-node --experimental-vm-modules test_tolerance.js     # 真实帧畸变容错套件
+node build_color.js   # 重新生成 RaptorQR_彩色版.html（check_*.mjs 输出到 test/fixtures/）
+node test/test_e2e.js      # 真实 RaptorQ 包裹包（头+CRC）端到端回路
+node test/test_codec.js    # 编解码往返 + 旋转/缩放/平移/亮度测试
+node --experimental-vm-modules test/test_accumulation.js   # 丢帧/重复包累积还原
+node --experimental-vm-modules test/test_tolerance.js       # 真实帧畸变容错套件
+node test/test_workers_vm.js / test/test_workers.js         # worker 沙箱执行验证
+node test/cdp_drive.js     # 真实浏览器 UI 驱动 + 捕获（需本机 Edge，产物入 test/fixtures/）
+node --experimental-vm-modules test/test_browser_e2e.js     # 捕获帧 -> 出厂 worker 逐字节还原
+node test/cdp_multipacket.js && node --experimental-vm-modules test/test_multipacket.js  # 多包链路
+node test/cdp_parallel.js  && node --experimental-vm-modules test/test_parallel.js      # 并行=4 链路
+node test/perf_test.js     # 性能与吞吐
 ```
 
 ## 已知边界

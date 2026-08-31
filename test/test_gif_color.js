@@ -8,8 +8,8 @@ const T = require('./test_tolerance.js');
   for (let i = 0; i < rnd.length; i++) rnd[i] = (Math.random() * 256) | 0;
   const w = await (async () => {
     const vm = require('vm');
-    const src = fs.readFileSync('worker_encode_color.js', 'utf8');
-    const wasmMapCode = fs.readFileSync('wasm_map_extracted.js', 'utf8');
+    const src = fs.readFileSync(__dirname + '/fixtures/worker_encode_color.js', 'utf8');
+    const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
     const listeners = [], posted = [];
     const sandbox = {
       postMessage: (msg) => posted.push(msg),
@@ -49,8 +49,8 @@ const T = require('./test_tolerance.js');
   // 2) gif worker generate
   const gifw = await (async () => {
     const vm = require('vm');
-    const src = fs.readFileSync('worker_gif_color.js', 'utf8');
-    const wasmMapCode = fs.readFileSync('wasm_map_extracted.js', 'utf8');
+    const src = fs.readFileSync(__dirname + '/fixtures/worker_gif_color.js', 'utf8');
+    const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
     const listeners = [], posted = [];
     const sandbox = {
       postMessage: (msg) => posted.push(msg),

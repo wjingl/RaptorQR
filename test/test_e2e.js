@@ -1,5 +1,5 @@
 // 端到端彩色回路：构造真实 RaptorQ 包裹包（8B 头 + 负载 + CRC32C）→ 渲染 → 解码 → 校验
-const CimQR = require('./cimqr_codec.js');
+const CimQR = require('../cimqr_codec.js');
 
 // CRC32C（来自 encode worker 的 cn，多项式 0x82F63B78）
 const crcTable = new Uint32Array(256);

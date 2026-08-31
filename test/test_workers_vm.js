@@ -18,6 +18,9 @@ async function runWorker(file) {
   sandbox.self = sandbox; // 真实 worker 中 self === globalThis
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  // 注入真实 WASM_MAP（worker 的 zxing 初始化需要）
+  const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
+  vm.runInContext(wasmMapCode, sandbox);
   const env = {
     postMessage: sandbox.postMessage,
     addEventListener: sandbox.addEventListener,
@@ -30,16 +33,16 @@ async function runWorker(file) {
   const mod = new vm.SourceTextModule(code, { context: sandbox, identifier: file });
   await mod.link(() => { throw new Error("unexpected import in worker: " + file); });
   const evalPromise = mod.evaluate(); // 顶层 await 挂起等待 wasm-assets
-  // 发送 wasm-assets 引导
+  // 发送 wasm-assets 引导（真实 WASM_MAP，含 fetch/instantiateStreaming 支持）
   await new Promise(r => setTimeout(r, 30));
-  for (const fn of listeners.slice()) fn({ data: { type: 'wasm-assets', map: {}, debug: false } });
+  for (const fn of listeners.slice()) fn({ data: { type: 'wasm-assets', map: sandbox.WASM_MAP, debug: false } });
   await evalPromise;
   return env;
 }
 
 (async () => {
   // ===== 1. qr_render worker：彩色渲染 =====
-  const renderEnv = await runWorker('check_qr_render.mjs');
+  const renderEnv = await runWorker(__dirname + '/fixtures/check_qr_render.mjs');
   console.log('qr_render onmessage:', typeof renderEnv.onmessage);
   const packet = new Uint8Array(3000);
   for (let i = 0; i < packet.length; i++) packet[i] = (i * 31) & 255;
@@ -52,18 +55,18 @@ async function runWorker(file) {
   if (!rendered) { console.log('RENDER FAILED'); process.exit(1); }
 
   // ===== 2. 用 codec 验证渲染帧可解码回原包 =====
-  const CimQR = require('./cimqr_codec.js');
+  const CimQR = require('../cimqr_codec.js');
   const rgba = new Uint8ClampedArray(rendered.buffer);
   const res = CimQR.decode(rgba, rendered.width, rendered.height);
   const ok = res.length === 1 && res[0].length === packet.length && res[0].every((v, i) => v === packet[i]);
   console.log('codec decode of worker-rendered tile:', ok ? 'ROUND-TRIP OK' : 'FAIL');
 
   // ===== 3. decode worker：彩色帧处理 =====
-  const decodeEnv = await runWorker('check_decode.mjs');
+  const decodeEnv = await runWorker(__dirname + '/fixtures/check_decode.mjs');
   decodeEnv.__posted.length = 0;
   decodeEnv.onmessage({ data: { type: 'settings', settings: { binarizer: 'LocalAverage', maxSymbols: 'auto', tryDownscale: true, downscaleFactor: 3 }, fecCodec: 'wasm-raptorq' } });
-  const fakeImageData = new sandbox.ImageData(rgba, rendered.width, rendered.height);
-  decodeEnv.onmessage({ data: { type: 'frame', imageData: fakeImageData } });
+  // 帧消息协议：worker 用 pixels+width+height 或 imageData；此沙箱用 pixels 最稳
+  decodeEnv.onmessage({ data: { type: 'frame', pixels: rgba.buffer.slice(0), width: rendered.width, height: rendered.height, realtime: false } });
   await new Promise(r => setTimeout(r, 800));
   const msgs = decodeEnv.__posted.filter(m => m.type === 'progress' || m.type === 'complete' || m.type === 'error');
   console.log('decode worker msgs:', msgs.map(m => m.type + (m.type === 'error' ? ': ' + m.message : m.type === 'progress' ? ' (status=' + m.status + ')' : '')).join(' | '));

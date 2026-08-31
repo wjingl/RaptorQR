@@ -1,5 +1,5 @@
 // 功能测试：修补后的 worker（qr_render/decode/gif）在 Node 中的彩色模式回路
-const CimQR = require('./cimqr_codec.js');
+const CimQR = require('../cimqr_codec.js');
 
 function makeWorkerEnv() {
   const listeners = [];
@@ -47,7 +47,7 @@ async function loadWorkerModule(file) {
 
 async function main() {
   // 1) 加载 qr_render worker，测试彩色渲染
-  const renderEnv = await loadWorkerModule('check_qr_render.mjs');
+  const renderEnv = await loadWorkerModule(__dirname + '/fixtures/check_qr_render.mjs');
   renderEnv.dispatch({ type: 'wasm-assets', map: {}, debug: false });
   await new Promise(r => setTimeout(r, 50));
   console.log('qr_render onmessage set:', typeof renderEnv.self.onmessage === 'function');
@@ -70,7 +70,7 @@ async function main() {
   console.log('codec decode of rendered tile:', res.length, res[0] ? 'len=' + res[0].length + ' match=' + res[0].every((v, i) => v === packet[i]) : '');
 
   // 3) 加载 decode worker，测试帧处理（彩色）
-  const decodeEnv = await loadWorkerModule('check_decode.mjs');
+  const decodeEnv = await loadWorkerModule(__dirname + '/fixtures/check_decode.mjs');
   decodeEnv.dispatch({ type: 'wasm-assets', map: {}, debug: false });
   await new Promise(r => setTimeout(r, 50));
   decodeEnv.dispatch({ type: 'settings', settings: { binarizer: 'LocalAverage', maxSymbols: 'auto', tryDownscale: true, downscaleFactor: 3 }, fecCodec: 'wasm-raptorq' });

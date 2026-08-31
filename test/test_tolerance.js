@@ -3,7 +3,7 @@
 // - decode via REAL decode worker + REAL RaptorQ WASM (same as shipped pipeline)
 const fs = require("fs");
 const zlib = require("zlib");
-const lib = fs.readFileSync('test_browser_e2e.js', 'utf8');
+const lib = fs.readFileSync(__dirname + '/test_browser_e2e.js', 'utf8');
 eval(lib.match(/function decodePNG[\s\S]*?\n}\n/)[0]);
 
 // ---------- bilinear affine transform on an output canvas (samples via inverse) ----------
@@ -133,9 +133,9 @@ function solveH(S, D) {
 
 // ---------- decode worker harness ----------
 async function makeDecodeWorker() {
-  const src = fs.readFileSync('worker_decode_color.js', 'utf8');
+  const src = fs.readFileSync(__dirname + '/fixtures/worker_decode_color.js', 'utf8');
   const vm = require('vm');
-  const wasmMapCode = fs.readFileSync('wasm_map_extracted.js', 'utf8');
+  const wasmMapCode = fs.readFileSync(__dirname + '/fixtures/wasm_map_extracted.js', 'utf8');
   const listeners = [], posted = [];
   const sandbox = {
     postMessage: (msg) => posted.push(msg),
@@ -168,7 +168,7 @@ async function makeDecodeWorker() {
 }
 
 async function main() {
-  const cap = JSON.parse(fs.readFileSync('cdp_capture.json', 'utf8'));
+  const cap = JSON.parse(fs.readFileSync(__dirname + '/fixtures/cdp_capture.json', 'utf8'));
   const base = decodePNG(cap.frames[0]);
   const rawText = ('CimQR-COLOR-E2E-验证|' + 'The quick brown fox jumps over the lazy dog. 0123456789 ').repeat(420);
   const expected = rawText.trim();

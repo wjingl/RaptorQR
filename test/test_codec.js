@@ -1,4 +1,4 @@
-const CimQR = require('./cimqr_codec.js');
+const CimQR = require('../cimqr_codec.js');
 
 // ---------- helpers ----------
 function randomPacket(len) {
