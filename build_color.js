@@ -56,7 +56,7 @@ let s1 = patchWorker(script1, 'qr_render', (code) => {
   const marker = 'let p,u,g;if(Ma(d)){';
   if (!code.includes(marker)) throw new Error('qr_render marker not found');
   code = code.replace(marker,
-    'let p,u,g;if(d==="color-cimbar"){const r0=CimQR.render(o,a.scale||1);p=r0.data.buffer,u=r0.width,g=r0.height}else if(Ma(d)){');
+    'let p,u,g;if(d==="color-cimbar"){const r0=CimQR.render(o,a.scale||1,a.cimSize||0);p=r0.data.buffer,u=r0.width,g=r0.height}else if(Ma(d)){');
   return code;
 });
 
@@ -72,16 +72,16 @@ s1 = patchWorker(s1, 'gif', (code) => {
   const ma = 'async function Ma(e,i,c,l,o="fast-qr-wasm"){switch(o){case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}';
   if (!code.includes(ma)) throw new Error('gif Ma not found');
   code = code.replace(ma,
-    'async function Ma(e,i,c,l,o="fast-qr-wasm",s=1){switch(o){case"color-cimbar":{const r0=CimQR.render(new Uint8Array(e),s);return new ImageData(r0.data,r0.width,r0.height)}case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}');
+    'async function Ma(e,i,c,l,o="fast-qr-wasm",s=1,z=0){switch(o){case"color-cimbar":{const r0=CimQR.render(new Uint8Array(e),s,z||0);return new ImageData(r0.data,r0.width,r0.height)}case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}');
   // 帧尺寸与并行数（const 链内一次声明；彩色大瓦片 1088×scale，并行数同黑白——多路并发 GIF）
   const q = 'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=A*$,z=ai(m)';
   if (!code.includes(q)) throw new Error('gif q not found');
   code = code.replace(q,
-    'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?Math.round(1088*(e.scale||1)):A*$),z=ai(m)');
+    'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?Math.round((CimQR.SIZES[e.cimSize||0]||CimQR.SIZES[0]).total*(e.scale||1)):A*$),z=ai(m)');
   // Ma 调用传 scale（彩色尺寸倍率）
   const macall = 'const Z=await Ma(i[J],o,h,$,w)';
   if (!code.includes(macall)) throw new Error('gif Ma call not found');
-  code = code.replace(macall, 'const Z=await Ma(i[J],o,h,$,w,e.scale||1)');
+  code = code.replace(macall, 'const Z=await Ma(i[J],o,h,$,w,e.scale||1,e.cimSize||0)');
   return code;
 });
 
@@ -111,7 +111,8 @@ s1 = patchWorker(s1, 'decode', (code) => {
 let s2 = script2;
 
 // 2a0. 彩色符号尺寸（像素）模块变量：Standard 1088 / HD 2176，UI 下拉可调，Start 时生效
-s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
+s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,CIM_CS=[[112,1024,7241],[104,952,6116],[96,880,5241],[80,736,3491],[64,592,2116],[56,520,1616],[48,448,1116],[40,376,616]];' +
+     'function _cix(o){return o<=10?7:o<=15?6:o<=20?5:o<=25?4:o<=30?3:o<=35?1:0}' + s2;
 
 // 2a. 编码器列表
 {
@@ -131,7 +132,7 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
   const old = 'function st(e,t,n=cn){const o=Vr(e),a=qr(t),i=n==="zxing-wasm"?Nr(o,a):Qr(o,a),s=i-$r-Ur;return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}';
   if (!s2.includes(old)) throw new Error('st not found');
   s2 = s2.replace(old,
-    'function st(e,t,n=cn){const o=Vr(e),a=qr(t);let i,s;if(n==="color-cimbar"){i=Math.max(500,Math.round(7241*(0.2+0.8*((o-10)/30))));s=i-$r-Ur}else{i=n==="zxing-wasm"?Nr(o,a):Qr(o,a);s=i-$r-Ur}return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}');
+    'function st(e,t,n=cn){const o=Vr(e),a=qr(t);let i,s;let ix=0;if(n==="color-cimbar"){ix=_cix(o);i=CIM_CS[ix][2];s=i-$r-Ur}else{i=n==="zxing-wasm"?Nr(o,a):Qr(o,a);s=i-$r-Ur}return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s,cimSize:ix,grid:CIM_CS[ix][0]}}');
 }
 // 2d. xo 瓦片尺寸（彩色符号固定 1088px 大瓦片；网格/并行按用户选择——多路并发支持）
 {
@@ -165,12 +166,12 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
 {
   const old = 'R.columns,rows:R.rows,version:t.version,eccLevel:t.eccLevel,qrEncoder:n,symbolSize:t.maxPayloadSize,scale:u,displayFrameCount:';
   if (!s2.includes(old)) throw new Error('xo scale not found');
-  s2 = s2.replace(old, 'R.columns,rows:R.rows,version:t.version,eccLevel:t.eccLevel,qrEncoder:n,symbolSize:t.maxPayloadSize,scale:n==="color-cimbar"?(colorSizeVar||1088)/1088:u,displayFrameCount:');
+  s2 = s2.replace(old, 'R.columns,rows:R.rows,version:t.version,eccLevel:t.eccLevel,qrEncoder:n,symbolSize:t.maxPayloadSize,scale:n==="color-cimbar"?(colorSizeVar||1088)/(CIM_CS[t.cimSize][1]+64):u,cimSize:t.cimSize,displayFrameCount:');
 }
 {
   const old = 'parallelCount:l.parallelCount,packetOrder:l.loopOrder})});if(g!==le.current)';
   if (!s2.includes(old)) throw new Error('gif call not found');
-  s2 = s2.replace(old, 'parallelCount:l.parallelCount,packetOrder:l.loopOrder,scale:l.qrEncoder==="color-cimbar"?(colorSizeVar||1088)/1088:1})});if(g!==le.current)');
+  s2 = s2.replace(old, 'parallelCount:l.parallelCount,packetOrder:l.loopOrder,scale:l.qrEncoder==="color-cimbar"?(colorSizeVar||1088)/(CIM_CS[_cix(l.version)][1]+64):1,cimSize:l.qrEncoder==="color-cimbar"?_cix(l.version):0})});if(g!==le.current)');
 }
 {
   const old = 'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa';
@@ -211,6 +212,12 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
     s2 = s2.split(old).join(neu);
   }
   // 按钮与文案（多处出现 → 全局替换）
+  {
+    const oldOpt = 'children:Ft.map(l=>{const g=st(l,b,k);return r("option",{value:l,children:["V",l," · ",g.maxPayloadSize," B/frame"]},l)})';
+    if (!s2.includes(oldOpt)) throw new Error('QR size option not found');
+    s2 = s2.replace(oldOpt,
+      'children:Ft.map(l=>{const g=st(l,b,k);return r("option",{value:l,children:k==="color-cimbar"?["Cim ",g.grid,"×",g.grid," · ",g.maxPayloadSize," B/frame"]:["V",l," · ",g.maxPayloadSize," B/frame"]},l)})');
+  }
   const globals = [
     [':"Start Live QR"', ':"Start Live QR (开始实时二维码)"'],
     ['children:"▶ Start Scan"', 'children:"▶ Start Scan (开始扫描)"'],

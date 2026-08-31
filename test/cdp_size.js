@@ -1,4 +1,5 @@
-// 验证彩色 QR SIZE 低容量档：V10 → 1448 B/frame，实际编码用小包
+// 验证彩色 QR SIZE 真实档位：V10 → Cim 40×40（616 B/frame，画布 1088 显示）
+// 与 V40 → 112×112（7241 B/frame）对照；低档符号渲染尺寸一致但格子 2.8× 大
 const { spawn } = require('child_process');
 const http = require('http');
 const PORT = 9300 + Math.floor(Math.random() * 200);
@@ -45,6 +46,7 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
       let cap = '';
       for (const el of document.querySelectorAll('span')) { const t = el.textContent || ''; if (t.indexOf('B/') >= 0 && t.length < 40) { cap = t.trim(); break; } }
       log.push('容量显示: ' + cap);
+      if (!/604/.test(cap)) return {ok:false, log: log.concat(['容量不符期望 604 B/frame（V10→40×40 负载）'])};
       const parSel = Array.from(document.querySelectorAll('select')).find(s => { const v = Array.from(s.options).map(o=>o.value); return v.includes('1')&&v.includes('8')&&!v.includes('10'); });
       if (parSel) { parSel.value='1'; parSel.dispatchEvent(new Event('change',{bubbles:true})); }
       await sleep(300);
