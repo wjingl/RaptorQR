@@ -717,6 +717,49 @@
     return { x: rx, y: accY / accW };
   }
 
+  // 模板缓存：按 NSP/INNER/低倍率 分档；低倍率（cellPx<5.5，如 0.5 倍渲染）下格起点奇偶
+  // 导致采样像素与符号 floor 错位 1，按 x/y 奇偶生成 4 套模板与渲染交集法精确一致
+  var tplCacheMap = {};
+  function getTpls(NSP, INNER, lowRes) {
+    var key = NSP + '_' + INNER + '_' + (lowRes ? 'L' : 'H');
+    if (tplCacheMap[key]) return tplCacheMap[key];
+    var tpls = [], softLits = [];
+    for (var parity = 0; parity < 4; parity++) {
+      var pxp = parity & 1, pyp = parity >> 1;
+      var tpl = [], softLit = [];
+      for (var s = 0; s < 16; s++) {
+        var hi = 0, lo = 0, mhi = 0, mlo = 0, lc = 0;
+        for (var sp = 0; sp < NSP * NSP; sp++) {
+          var pxv = (8 - INNER) / 2 + ((sp % NSP) + 0.5) / NSP * INNER;
+          var pyv = (8 - INNER) / 2 + ((sp / NSP | 0) + 0.5) / NSP * INNER;
+          var spx, spy;
+          if (lowRes) {
+            var kx = Math.floor((pxp + pxv) * 0.5);
+            spx = Math.min(7, Math.max(2 * kx, pxp) - pxp);
+            var ky = Math.floor((pyp + pyv) * 0.5);
+            spy = Math.min(7, Math.max(2 * ky, pyp) - pyp);
+          } else {
+            spx = Math.min(7, Math.floor(pxv));
+            spy = Math.min(7, Math.floor(pyv));
+          }
+          var bit = Number((PATTERNS[s] >> BigInt(63 - (spy * 8 + spx))) & 1n);
+          hi = (hi << 1) | ((lo >>> 31) & 1);
+          lo = ((lo << 1) | bit) >>> 0;
+          mhi = (mhi << 1) | ((mlo >>> 31) & 1);
+          mlo = ((mlo << 1) | bit) >>> 0;
+          if (bit) lc++;
+        }
+        tpl.push([hi >>> 0, lo]);
+        softLit.push([mhi >>> 0, mlo, lc]);
+      }
+      tpls.push(tpl);
+      softLits.push(softLit);
+    }
+    var r = { tpls: tpls, softLits: softLits };
+    tplCacheMap[key] = r;
+    return r;
+  }
+
   // 单次解码尝试：detTarget=检测用降采样目标边长，INNER=格内采样跨度（越小越抗模糊/混色），
   // soft=软判决匹配，useMarker=用 BR 对齐标记作第 4 角点（否则平行四边形估计）
   function decodeAttempt(rgba, w, h, detTarget, INNER, soft, useMarker) {
@@ -842,7 +885,7 @@
     // 采样格内圈：INNER<8 时采样点向格中心收缩，避开格边缘与 1px 空隙的混色/模糊污染
     var INNER_OFF = (8 - INNER) / 2;
     var px = new Float64Array(nsq), py = new Float64Array(nsq);
-    for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP) + 0.5) / NSP * INNER; }
+    for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP | 0) + 0.5) / NSP * INNER; }
     // popcount 表（8 位）
     var pop8 = CimQR_POP8 || (function () {
       var t = new Uint8Array(256), i, j, c;
@@ -851,18 +894,10 @@
       return t;
     })();
     // 每个模板在 NSP×NSP 采样网格下的期望图案（预计算，与采样点一致），32 位双字
-    var tpl = [];
-    for (var s = 0; s < 16; s++) {
-      var hi = 0, lo = 0;
-      for (var sp = 0; sp < nsq; sp++) {
-        var spx = Math.min(7, Math.floor((INNER_OFF + ((sp % NSP) + 0.5) / NSP * INNER)));
-        var spy = Math.min(7, Math.floor((INNER_OFF + ((sp / NSP) + 0.5) / NSP * INNER)));
-        var bit = Number((PATTERNS[s] >> BigInt(63 - (spy * 8 + spx))) & 1n);
-        hi = (hi << 1) | ((lo >>> 31) & 1);
-        lo = ((lo << 1) | bit) >>> 0;
-      }
-      tpl.push([hi >>> 0, lo]);
-    }
+    // 低倍率（cellPx<5.5）下按格起点 x/y 奇偶选 4 套模板（与渲染交集法一致）
+    var tplSet = getTpls(NSP, INNER, cellPx < 5.5);
+    var tpl = tplSet.tpls;
+    var tplIdxSel = cellPx < 5.5 ? 1 : 0;
     // 色相表（用于对每个采样点按色相分类；背景为黑色、低色度）
     var hueTable = (function () {
       var t = new Array(361).fill(-1), i;
@@ -881,22 +916,7 @@
     var colVotes = [0, 0, 0, 0];
     function pop32(x) { return pop8[x & 255] + pop8[(x >>> 8) & 255] + pop8[(x >>> 16) & 255] + pop8[(x >>> 24) & 255]; }
     // 软判决预计算：每模板的亮点数与掩码（按采样序打包 hi/lo），供连续彩色度打分
-    var softLit = null;
-    if (soft) {
-      softLit = [];
-      for (var s2 = 0; s2 < 16; s2++) {
-        var mhi = 0, mlo = 0, lc = 0;
-        for (var sp2 = 0; sp2 < nsq; sp2++) {
-          var spx2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 % NSP) + 0.5) / NSP * INNER)));
-          var spy2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 / NSP) + 0.5) / NSP * INNER)));
-          var bit2 = Number((PATTERNS[s2] >> BigInt(63 - (spy2 * 8 + spx2))) & 1n);
-          mhi = (mhi << 1) | ((mlo >>> 31) & 1);
-          mlo = ((mlo << 1) | bit2) >>> 0;
-          if (bit2) lc++;
-        }
-        softLit.push([mhi >>> 0, mlo, lc]);
-      }
-    }
+    var softLit = soft ? tplSet.softLits : null;
     var sR = soft ? new Float64Array(nsq) : null, sG = soft ? new Float64Array(nsq) : null, sB = soft ? new Float64Array(nsq) : null, sC = soft ? new Float64Array(nsq) : null;
     for (i = 0; i < DATA_CELLS; i++) {
       var gridIdx = cellPos[i];
@@ -934,7 +954,7 @@
         for (q = 0; q < nsq; q++) { sC[q] = sC[q] / maxCh; cfSum += sC[q]; }
         var bestSym2 = 0, bestD2 = Infinity;
         for (var s3 = 0; s3 < 16; s3++) {
-          var L = softLit[s3];
+          var L = (tplIdxSel ? softLit[(cr & 1) * 2 + (cc & 1)] : softLit[0])[s3];
           var dotv = 0;
           for (q = 0; q < nsq; q++) {
             var pos = nsq - 1 - q;
@@ -1001,8 +1021,9 @@
       if (colVotes[bestC] < Math.max(1, nsq * 0.04)) { vals[i] = 255; continue; }
       // 匹配符号（16 模板，popcount Hamming）
       var bestSym = 0, bestD = nsq + 1;
+      var tplT = tplIdxSel ? tpl[(cr & 1) * 2 + (cc & 1)] : tpl[0];
       for (var s = 0; s < 16; s++) {
-        var d = pop32((patHi ^ tpl[s][0]) >>> 0) + pop32((patLo ^ tpl[s][1]) >>> 0);
+        var d = pop32((patHi ^ tplT[s][0]) >>> 0) + pop32((patLo ^ tplT[s][1]) >>> 0);
         if (d < bestD) { bestD = d; bestSym = s; }
       }
       vals[i] = (bestC << SYMBOL_BITS) | bestSym;
@@ -1056,25 +1077,16 @@
     var nsq = NSP * NSP;
     var INNER_OFF = (8 - INNER) / 2;
     var px = new Float64Array(nsq), py = new Float64Array(nsq);
-    for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP) + 0.5) / NSP * INNER; }
+    for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP | 0) + 0.5) / NSP * INNER; }
     var pop8 = CimQR_POP8 || (function () {
       var t = new Uint8Array(256), j, c;
       for (j = 0; j < 256; j++) { c = 0; for (var k = j; k; k &= k - 1) c++; t[j] = c; }
       CimQR_POP8 = t;
       return t;
     })();
-    var tpl = [];
-    for (var s = 0; s < 16; s++) {
-      var hi = 0, lo = 0;
-      for (var sp = 0; sp < nsq; sp++) {
-        var spx = Math.min(7, Math.floor((INNER_OFF + ((sp % NSP) + 0.5) / NSP * INNER)));
-        var spy = Math.min(7, Math.floor((INNER_OFF + ((sp / NSP) + 0.5) / NSP * INNER)));
-        var bit = Number((PATTERNS[s] >> BigInt(63 - (spy * 8 + spx))) & 1n);
-        hi = (hi << 1) | ((lo >>> 31) & 1);
-        lo = ((lo << 1) | bit) >>> 0;
-      }
-      tpl.push([hi >>> 0, lo]);
-    }
+    var tplSet = getTpls(NSP, INNER, cellPx < 5.5);
+    var tpl = tplSet.tpls;
+    var tplIdxSel = cellPx < 5.5 ? 1 : 0;
     var hueTable = (function () {
       var t = new Array(361).fill(-1), j;
       function addHue(hueDeg, colorIdx) {
@@ -1088,22 +1100,7 @@
     var colVotes = [0, 0, 0, 0];
     function pop32(x) { return pop8[x & 255] + pop8[(x >>> 8) & 255] + pop8[(x >>> 16) & 255] + pop8[(x >>> 24) & 255]; }
     var h0 = H.h[0], h1 = H.h[1], h2 = H.h[2], h3 = H.h[3], h4 = H.h[4], h5 = H.h[5], h6 = H.h[6], h7 = H.h[7];
-    var softLit = null;
-    if (soft) {
-      softLit = [];
-      for (var s2 = 0; s2 < 16; s2++) {
-        var mhi = 0, mlo = 0, lc = 0;
-        for (var sp2 = 0; sp2 < nsq; sp2++) {
-          var spx2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 % NSP) + 0.5) / NSP * INNER)));
-          var spy2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 / NSP) + 0.5) / NSP * INNER)));
-          var bit2 = Number((PATTERNS[s2] >> BigInt(63 - (spy2 * 8 + spx2))) & 1n);
-          mhi = (mhi << 1) | ((mlo >>> 31) & 1);
-          mlo = ((mlo << 1) | bit2) >>> 0;
-          if (bit2) lc++;
-        }
-        softLit.push([mhi >>> 0, mlo, lc]);
-      }
-    }
+    var softLit = soft ? tplSet.softLits : null;
     var sR = soft ? new Float64Array(nsq) : null, sG = soft ? new Float64Array(nsq) : null, sB = soft ? new Float64Array(nsq) : null, sC = soft ? new Float64Array(nsq) : null;
     for (i = 0; i < DATA_CELLS; i++) {
       var gridIdx = cellPos[i];
@@ -1138,7 +1135,7 @@
         for (q = 0; q < nsq; q++) { sC[q] = sC[q] / maxCh; cfSum += sC[q]; }
         var bestSym2 = 0, bestD2 = Infinity;
         for (var s3 = 0; s3 < 16; s3++) {
-          var L = softLit[s3];
+          var L = (tplIdxSel ? softLit[(cr & 1) * 2 + (cc & 1)] : softLit[0])[s3];
           var dotv = 0;
           for (q = 0; q < nsq; q++) {
             var pos = nsq - 1 - q;
@@ -1199,8 +1196,9 @@
       for (var cl = 1; cl < 4; cl++) if (colVotes[cl] > colVotes[bestC]) bestC = cl;
       if (colVotes[bestC] < Math.max(1, nsq * 0.04)) { vals[i] = 255; continue; }
       var bestSym = 0, bestD = nsq + 1;
+      var tplT = tplIdxSel ? tpl[(cr & 1) * 2 + (cc & 1)] : tpl[0];
       for (var s = 0; s < 16; s++) {
-        var d = pop32((patHi ^ tpl[s][0]) >>> 0) + pop32((patLo ^ tpl[s][1]) >>> 0);
+        var d = pop32((patHi ^ tplT[s][0]) >>> 0) + pop32((patLo ^ tplT[s][1]) >>> 0);
         if (d < bestD) { bestD = d; bestSym = s; }
       }
       vals[i] = (bestC << SYMBOL_BITS) | bestSym;
@@ -1243,9 +1241,9 @@
   // BR 标记给出真实第 4 角点（透视精确）；平行四边形变体保留（标记误检时由 RS 裁决）
   var ATTEMPTS = [
     [512, 7.5, false, true],
+    [512, 6, true, true],
     [768, 7.5, false, true],
     [512, 6, false, true],
-    [512, 6, true, true],
     [512, 6, true, false],
     [512, 7.5, false, false],
     [512, 4.5, true, true],
@@ -1258,7 +1256,7 @@
     // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
     if (_lastH) {
       var fast;
-      try { fast = decodeFromH(rgba, w, h, _lastH, 7.5, false); } catch (e) { fast = []; }
+      try { fast = decodeFromH(rgba, w, h, _lastH, 6, true); } catch (e) { fast = []; }
       if (fast && fast.length) return fast;
       // 复用失败（画面变化/切包）：继续完整检测，_lastH 会被新成功帧刷新
     }

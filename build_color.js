@@ -95,10 +95,15 @@ s1 = patchWorker(s1, 'decode', (code) => {
     'const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0)return;let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}');
   // 实时帧"保最新"策略：解码处理中到达的实时帧不排队（相机 30fps 永远有新帧），
   // 只保留最新一帧（pendingLatest），处理完立即跟进——消除积压与陈旧画面延迟
+  // 帧哈希去重：发送端循环播放时重复帧占大多数（同一符号反复出现），
+  // 廉价像素哈希命中历史帧 → 直接跳过（包必重复，dedup 会拦），省全部解码开销
   const msgs = 'function ms(r,n){if(n&&Ae.reduce((u,s)=>u+(s.realtime?1:0),0)>=hs){const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),gs()}async function gs(){if(!Xt){Xt=!0;try{for(;Ae.length>0;){const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[])}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}';
   if (!code.includes(msgs)) throw new Error('decode ms/gs not found');
   code = code.replace(msgs,
-    'var pendingLatest=null;function ms(r,n){if(n){if(Xt){pendingLatest=r;return}if(Ae.length===0){Ae.push({imageData:r,realtime:!0}),gs();return}const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),n||gs()}async function gs(){if(!Xt){Xt=!0;try{for(;;){if(pendingLatest){Ae.push({imageData:pendingLatest,realtime:!0}),pendingLatest=null}if(Ae.length===0)break;const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[],pendingLatest=null)}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}');
+    'var pendingLatest=null;var fhCache=new Map;function fhKey(r){var d=r.data,w=r.width,h=r.height,hh=0,st=Math.max(4,Math.floor(Math.max(w,h)/64));for(var y=0;y<h;y+=st)for(var x=0;x<w;x+=st){var o=(y*w+x)*4;var v=((d[o]>>4)&3)|((d[o+1]>>4)&3)<<2|((d[o+2]>>4)&3)<<4;hh=((hh*31)+v)>>>0}return hh}function ms(r,n){if(n){if(Xt){pendingLatest=r;return}var hk=fhKey(r);if(fhCache.has(hk)){return}if(fhCache.size>64)fhCache.clear();fhCache.set(hk,1);if(Ae.length===0){Ae.push({imageData:r,realtime:!0}),gs();return}const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),n||gs()}async function gs(){if(!Xt){Xt=!0;try{for(;;){if(pendingLatest){Ae.push({imageData:pendingLatest,realtime:!0}),pendingLatest=null}if(Ae.length===0)break;const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[],pendingLatest=null)}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}');
+  // reset 时清空帧哈希缓存（新扫描画面全新）
+  code = code.split('if(n.type==="reset"){b=null,Ae=[],nr=!1,ar=!1;return}')
+             .join('if(n.type==="reset"){b=null,Ae=[],nr=!1,ar=!1,fhCache&&fhCache.clear();return}');
   return code;
 });
 
@@ -158,7 +163,7 @@ s2 = 'var colorSizeVar=1088;' + s2;
   const old = 'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa';
   if (!s2.includes(old)) throw new Error('encoder select not found');
   s2 = s2.replace(old,
-    'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),k==="color-cimbar"&&r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("span",{style:p.label,children:"Color size (彩色尺寸)"}),r("span",{style:p.infoValue,children:[colorSizeVar," px"]})]}),r("select",{style:p.select,onChange:l=>{colorSizeVar=Number(l.target.value)||1088},children:[r("option",{value:1088,children:"Standard (标准) 1088"}),r("option",{value:2176,children:"HD (高清) 2176"})]})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa');
+    'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),k==="color-cimbar"&&r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("span",{style:p.label,children:"Color size (彩色尺寸)"}),r("span",{style:p.infoValue,children:[colorSizeVar," px"]})]}),r("select",{style:p.select,onChange:l=>{colorSizeVar=Number(l.target.value)||1088},children:[r("option",{value:544,children:"Compact (紧凑) 544"}),r("option",{value:1088,children:"Standard (标准) 1088"}),r("option",{value:2176,children:"HD (高清) 2176"})]})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa');
 }
 // 2f. UI 中文化：所有选项/按钮/区域标题 英文后附中文括号翻译
 {
