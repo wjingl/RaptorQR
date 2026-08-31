@@ -719,6 +719,8 @@
 
   // 模板缓存：按 NSP/INNER/低倍率 分档；低倍率（cellPx<5.5，如 0.5 倍渲染）下格起点奇偶
   // 导致采样像素与符号 floor 错位 1，按 x/y 奇偶生成 4 套模板与渲染交集法精确一致
+  // 检测缓存：同帧同 SCALE 复用 finder 候选（阶梯各层同降采样尺寸时省重复检测/精化）
+  var detToken = 0, detCacheKey = '', detCands = [];
   var tplCacheMap = {};
   function getTpls(NSP, INNER, lowRes) {
     var key = NSP + '_' + INNER + '_' + (lowRes ? 'L' : 'H');
@@ -788,7 +790,9 @@
         }
       }
     }
-    var cands = detectFinders(dg, dw, dh);
+    var dk = detToken + '_' + dw + '_' + dh;
+    if (detCacheKey !== dk) { detCands = detectFinders(dg, dw, dh); detCacheKey = dk; }
+    var cands = detCands;
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'det', cands: cands.slice(0, 12).map(function(c){return {x:+c.x.toFixed(1), y:+c.y.toFixed(1), m:+c.module.toFixed(2), n:c.n};}) });
     if (cands.length < 3) return [];
     // —— 多符号并行：同一帧可含多个 CimQR 符号（网格布局），逐符号解码，解完移除其寻像候选 ——
@@ -1253,6 +1257,7 @@
     [2048, 7.5, false, true]
   ];
   function decodeFrame(rgba, w, h) {
+    detToken++;
     // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
     if (_lastH) {
       var fast;

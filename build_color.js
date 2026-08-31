@@ -111,7 +111,7 @@ s1 = patchWorker(s1, 'decode', (code) => {
 let s2 = script2;
 
 // 2a0. 彩色符号尺寸（像素）模块变量：Standard 1088 / HD 2176，UI 下拉可调，Start 时生效
-s2 = 'var colorSizeVar=1088;' + s2;
+s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
 
 // 2a. 编码器列表
 {
@@ -147,6 +147,19 @@ s2 = 'var colorSizeVar=1088;' + s2;
   const old = 'E=h.videoHeight||640,z=640,L=x/E;';
   if (!s2.includes(old)) throw new Error('z=640 not found');
   s2 = s2.replace(old, 'E=h.videoHeight||640,z=1024,L=x/E;');
+}
+// 2e1. 采集端节流：按解码速率抓帧（progress 间隔×1.3，30-120ms），
+//      省主线程 drawImage/getImageData 开销与无效投递（worker 保最新已兜底）
+{
+  const old = 'Bt=C(()=>{const h=e.current,T=t.current,l=d.current;if(!h||!T||!l||h.readyState<2)return;';
+  if (!s2.includes(old)) throw new Error('Bt not found');
+  s2 = s2.replace(old, 'Bt=C(()=>{const h=e.current,T=t.current,l=d.current;if(!h||!T||!l||h.readyState<2)return;if(performance.now()-grabLast<grabInterval)return;grabLast=performance.now();');
+}
+{
+  // progress 到达时自适应抓帧间隔
+  const old = 'case"progress":{$(l.totalFrames??0);';
+  if (!s2.includes(old)) throw new Error('progress case not found');
+  s2 = s2.replace(old, 'case"progress":{if(progLast){var gi=performance.now()-progLast;grabInterval=Math.max(30,Math.min(120,gi*1.3));}progLast=performance.now();$(l.totalFrames??0);');
 }
 // 2e2. 彩色尺寸：xo scale 传倍率（render worker 用）+ gif 调用传 scale + UI 下拉
 {
