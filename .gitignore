@@ -5,3 +5,8 @@ cdp_multipacket.json
 *.dump.html
 *.log
 node_modules/
+# 独立子系统/内部文件（不入库）
+send_manager/
+.zcode/
+AGENTS.md
+cdp_parallel.json
