@@ -131,7 +131,7 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0;' + s2;
   const old = 'function st(e,t,n=cn){const o=Vr(e),a=qr(t),i=n==="zxing-wasm"?Nr(o,a):Qr(o,a),s=i-$r-Ur;return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}';
   if (!s2.includes(old)) throw new Error('st not found');
   s2 = s2.replace(old,
-    'function st(e,t,n=cn){const o=Vr(e),a=qr(t);let i,s;if(n==="color-cimbar"){i=7241;s=i-$r-Ur}else{i=n==="zxing-wasm"?Nr(o,a):Qr(o,a);s=i-$r-Ur}return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}');
+    'function st(e,t,n=cn){const o=Vr(e),a=qr(t);let i,s;if(n==="color-cimbar"){i=Math.max(500,Math.round(7241*(0.2+0.8*((o-10)/30))));s=i-$r-Ur}else{i=n==="zxing-wasm"?Nr(o,a):Qr(o,a);s=i-$r-Ur}return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}');
 }
 // 2d. xo 瓦片尺寸（彩色符号固定 1088px 大瓦片；网格/并行按用户选择——多路并发支持）
 {
