@@ -46,7 +46,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   const driver = `
   (async () => {
     const log = [];
-    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim()===t)return x;return null;}
+    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim().startsWith(t))return x;return null;}
     function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
     // hook Worker: log render requests/completions
     const Orig = window.Worker;

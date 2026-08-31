@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>工作台 — RaptorQR 发送管理</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="topbar" class="topbar"></div>
+  <div class="container">
+    <h1 class="page-title">工作台</h1>
+    <p class="page-sub" id="pageSub"></p>
+    <div id="alert" class="alert"></div>
+
+    <div class="card" id="adminLinks" style="display:none;">
+      <h2>管理入口（总管理）</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;">
+        <a class="btn" href="/users">👥 账号管理</a>
+        <a class="btn secondary" href="/audit">📋 审计日志</a>
+        <a class="btn secondary" href="/records">📦 全部记录</a>
+        <a class="btn secondary" href="/stats">📊 详细统计</a>
+        <a class="btn secondary" href="/receiver">📥 接收端下载</a>
+      </div>
+    </div>
+
+    <div class="card" id="pendingCard" style="display:none;">
+      <h2>待审批账号</h2>
+      <div class="table-wrap"><table><thead><tr><th>用户名</th><th>姓名</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="pendingBody"></tbody></table></div>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card"><div class="num" id="sTotal">-</div><div class="label">传出次数</div></div>
+      <div class="stat-card"><div class="num" id="sBytes">-</div><div class="label">传出总大小</div></div>
+      <div class="stat-card"><div class="num" id="sDone">-</div><div class="label">已完成</div></div>
+      <div class="stat-card"><div class="num" id="sSending">-</div><div class="label">传输中</div></div>
+    </div>
+
+    <div class="card">
+      <h2>按目的地</h2>
+      <div class="table-wrap"><table><thead><tr><th>目的地</th><th>次数</th><th>大小</th><th>已完成</th></tr></thead><tbody id="destBody"></tbody></table></div>
+    </div>
+
+    <div class="card" id="userCard" style="display:none;">
+      <h2>成员传输记录（点击用户名查看该成员全部记录）</h2>
+      <div class="table-wrap"><table><thead><tr><th>用户</th><th>次数</th><th>大小</th><th>已完成</th></tr></thead><tbody id="userBody"></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>最近传出记录</h2>
+      <div class="table-wrap"><table><thead><tr><th id="thUser" style="display:none;">用户</th><th>时间</th><th>文件名</th><th>大小</th><th>目的地</th><th>状态</th><th id="thBackup" style="display:none;">备份</th></tr></thead><tbody id="recBody"></tbody></table></div>
+    </div>
+  </div>
+  <script src="/js/common.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

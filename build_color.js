@@ -73,11 +73,11 @@ s1 = patchWorker(s1, 'gif', (code) => {
   if (!code.includes(ma)) throw new Error('gif Ma not found');
   code = code.replace(ma,
     'async function Ma(e,i,c,l,o="fast-qr-wasm"){switch(o){case"color-cimbar":{const r0=CimQR.render(new Uint8Array(e));return new ImageData(r0.data,r0.width,r0.height)}case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}');
-  // 帧尺寸与并行数（const 链内一次声明）
+  // 帧尺寸与并行数（const 链内一次声明；彩色大瓦片 1088px，并行数同黑白——多路并发 GIF）
   const q = 'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=A*$,z=ai(m)';
   if (!code.includes(q)) throw new Error('gif q not found');
   code = code.replace(q,
-    'm=(w==="color-cimbar"?1:ei(e.parallelCount)),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?1088:A*$),z=ai(m)');
+    'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?1088:A*$),z=ai(m)');
   return code;
 });
 
@@ -101,12 +101,12 @@ let s2 = script2;
   if (!s2.includes(old)) throw new Error('Or not found');
   s2 = s2.replace(old, 'const Or=["fast-qr-wasm","zxing-wasm","color-cimbar"],cn="fast-qr-wasm";');
 }
-// 2b. Wr 归一化
+// 2b. Wr 归一化 + qt 编码器标签（中英双语）
 {
   const old = 'case"zxing-wasm":case"zxing":case"zxingWasm":return"zxing-wasm";default:return cn}}function qt(e){switch(e){case"fast-qr-wasm":return"fast_qr WASM";case"zxing-wasm":return"ZXing WASM"}}';
   if (!s2.includes(old)) throw new Error('Wr/qt not found');
   s2 = s2.replace(old,
-    'case"zxing-wasm":case"zxing":case"zxingWasm":return"zxing-wasm";case"color-cimbar":case"colorCimbar":return"color-cimbar";default:return cn}}function qt(e){switch(e){case"fast-qr-wasm":return"fast_qr WASM";case"zxing-wasm":return"ZXing WASM";case"color-cimbar":return"Color CimQR"}}');
+    'case"zxing-wasm":case"zxing":case"zxingWasm":return"zxing-wasm";case"color-cimbar":case"colorCimbar":return"color-cimbar";default:return cn}}function qt(e){switch(e){case"fast-qr-wasm":return"fast_qr WASM (快速)";case"zxing-wasm":return"ZXing WASM (兼容)";case"color-cimbar":return"Color CimQR (彩色高速)"}}');
 }
 // 2c. st 容量（彩色符号：包裹包 7241B → 负载 7229B）
 {
@@ -115,26 +115,89 @@ let s2 = script2;
   s2 = s2.replace(old,
     'function st(e,t,n=cn){const o=Vr(e),a=qr(t);let i,s;if(n==="color-cimbar"){i=7241;s=i-$r-Ur}else{i=n==="zxing-wasm"?Nr(o,a):Qr(o,a);s=i-$r-Ur}return{id:Hn(o,a),label:`V${o}-${a}`,version:o,eccLevel:a,qrEncoder:n,maxPacketSize:i,maxPayloadSize:s}}');
 }
-// 2d. xo 瓦片尺寸（彩色符号固定 1088px，并行强制 1）
+// 2d. xo 瓦片尺寸（彩色符号固定 1088px 大瓦片；网格/并行按用户选择——多路并发支持）
 {
   const old = 'const f=t.version*4+17+so*2,u=Math.max(2,Math.round(lo/f)),y=f*u,R=Po(o),c=Array.from({length:e.length},(b,v)=>v);';
   if (!s2.includes(old)) throw new Error('xo not found');
   s2 = s2.replace(old,
-    'const f=t.version*4+17+so*2,u=n==="color-cimbar"?1:Math.max(2,Math.round(lo/f)),y=n==="color-cimbar"?1088:f*u,R=Po(n==="color-cimbar"?1:o),c=Array.from({length:e.length},(b,v)=>v);');
+    'const f=t.version*4+17+so*2,u=n==="color-cimbar"?1:Math.max(2,Math.round(lo/f)),y=n==="color-cimbar"?1088:f*u,R=Po(o),c=Array.from({length:e.length},(b,v)=>v);');
 }
-// 2d2. xo parallelCount/displayFrameCount：彩色强制 1 瓦片/帧（否则 displayFrameCount=ceil(包数/4)=1
-//      → 播放永远停在第 0 帧，多包时画布只显示最后一个包，接收端收不齐 → 传输卡死）
-{
-  const old = 'displayFrameCount:Hr(e.length,o),parallelCount:o}}function Co(e,t,n,o){';
-  if (!s2.includes(old)) throw new Error('xo displayFrameCount not found');
-  s2 = s2.replace(old,
-    'displayFrameCount:Hr(e.length,n==="color-cimbar"?1:o),parallelCount:n==="color-cimbar"?1:o}}function Co(e,t,n,o){');
-}
+// 2d2. （已删除：parallelCount/displayFrameCount 原逻辑即正确——R=Po(o) 网格下各瓦片位置不重叠，
+//      彩色多路并发由 2d 的大瓦片 + 原逻辑天然支持；单包冻结问题根源是 R 被强制 1 而 parallelCount 仍为 o）
 // 2e. 接收端采集分辨率 640 → 1024（彩色符号需要更高分辨率）
 {
   const old = 'E=h.videoHeight||640,z=640,L=x/E;';
   if (!s2.includes(old)) throw new Error('z=640 not found');
   s2 = s2.replace(old, 'E=h.videoHeight||640,z=1024,L=x/E;');
+}
+
+// 2f. UI 中文化：所有选项/按钮/区域标题 英文后附中文括号翻译
+{
+  const pairs = [
+    // 标签函数（选项下拉）
+    ['function wo(e){switch(e){case"L":return"L - low";case"M":return"M - medium";case"Q":return"Q - quartile";case"H":return"H - high"}}',
+     'function wo(e){switch(e){case"L":return"L - low (低)";case"M":return"M - medium (中)";case"Q":return"Q - quartile (四分位)";case"H":return"H - high (高)"}}'],
+    ['function Ht(e){switch(e){case"fast-start":return"Fast start";case"even-spread":return"Even spread";case"balanced":default:return"Balanced"}}',
+     'function Ht(e){switch(e){case"fast-start":return"Fast start (快速开始)";case"even-spread":return"Even spread (均匀分布)";case"balanced":default:return"Balanced (均衡)"}}'],
+    ['function Ve(e){return e==="auto"?"Auto":e==="wasm-raptorq"?"RaptorQ WASM":"JS RLNC (deprecated / compatible)"}',
+     'function Ve(e){return e==="auto"?"Auto (自动)":e==="wasm-raptorq"?"RaptorQ WASM (喷泉码)":"JS RLNC (旧版兼容)"}'],
+    ['function En(e){return e==="fast"?"Fast":e==="balance"?"Balance":e==="robust"?"Robust":"Custom"}',
+     'function En(e){return e==="fast"?"Fast (快速)":e==="balance"?"Balance (均衡)":e==="robust"?"Robust (稳健)":"Custom (自定义)"}'],
+    ['function Vo(e){return e==="auto"?"Auto (4)":String(e)}',
+     'function Vo(e){return e==="auto"?"Auto (4) (自动)":e+" 个"}'],
+    // 并行 QR 选项文案
+    ['children:or.map(l=>r("option",{value:l,children:[l," QR",l===1?"":"s"," per tick"]},l))',
+     'children:or.map(l=>r("option",{value:l,children:[l," QR per tick (每帧 ",l," 个)"]},l))'],
+    // 滑杆标签
+    ['children:[r("span",{children:"Stable"}),r("span",{children:"Fast"})]',
+     'children:[r("span",{children:"Stable (稳定)"}),r("span",{children:"Fast (快速)"})]'],
+    ['children:[r("span",{children:"Less QR"}),r("span",{children:"More repair"})]',
+     'children:[r("span",{children:"Less QR (少纠错)"}),r("span",{children:"More repair (多纠错)"})]'],
+    // 高级设置开关（发送端 + 接收端）
+    ['children:U?"Hide advanced settings":"Advanced settings"',
+     'children:U?"Hide advanced settings (隐藏高级设置)":"Advanced settings (高级设置)"'],
+    ['children:Ce?"Hide advanced settings":"Advanced settings"',
+     'children:Ce?"Hide advanced settings (隐藏高级设置)":"Advanced settings (高级设置)"'],
+  ];
+  for (const [old, neu] of pairs) {
+    if (!s2.includes(old)) throw new Error('UI patch not found: ' + old.slice(0, 50));
+    s2 = s2.split(old).join(neu);
+  }
+  // 按钮与文案（多处出现 → 全局替换）
+  const globals = [
+    [':"Start Live QR"', ':"Start Live QR (开始实时二维码)"'],
+    ['children:"▶ Start Scan"', 'children:"▶ Start Scan (开始扫描)"'],
+    ['children:"■ Stop Scan"', 'children:"■ Stop Scan (停止扫描)"'],
+    ['children:"Stop"', 'children:"Stop (停止)"'],
+    ['children:"Fullscreen QR"', 'children:"Fullscreen QR (全屏)"'],
+    ['children:"Choose file"', 'children:"Choose file (选择文件)"'],
+    [':"No file selected"', ':"No file selected (未选择文件)"'],
+    [':"Prepare GIF"', ':"Prepare GIF (生成动图)"'],
+    ['"Download GIF (",Math.round(X.gifData.byteLength/1024)," KB)"]', '"Download GIF (下载动图 ",Math.round(X.gifData.byteLength/1024)," KB)"]'],
+    ['children:"File"}),r("button",{style:p.toggleBtn(e==="text"),onClick:()=>at("text"),children:"Text"})',
+     'children:"File (文件)"}),r("button",{style:p.toggleBtn(e==="text"),onClick:()=>at("text"),children:"Text (文本)"})'],
+    ['children:"QR size"', 'children:"QR size (尺寸)"'],
+    ['children:"QR ECC"', 'children:"QR ECC (纠错)"'],
+    ['children:"QR encoder"', 'children:"QR encoder (编码器)"'],
+    ['children:"FEC codec"', 'children:"FEC codec (纠错码)"'],
+    ['children:"RaptorQ repair"', 'children:"RaptorQ repair (修复比例)"'],
+    ['children:"RaptorQ playback"', 'children:"RaptorQ playback (播放策略)"'],
+    ['children:"QR speed"', 'children:"QR speed (速度)"'],
+    ['children:"Parallel QR"', 'children:"Parallel QR (并发数)"'],
+    ['children:"Decode preset"', 'children:"Decode preset (解码预设)"'],
+    ['children:"Binarizer"', 'children:"Binarizer (二值化)"'],
+    ['children:"Max symbols"', 'children:"Max symbols (最大符号数)"'],
+    ['children:"Live QR Transfer"', 'children:"Live QR Transfer (实时传输)"'],
+    ['children:"Transfer Info"', 'children:"Transfer Info (传输信息)"'],
+    ['children:"Original size"', 'children:"Original size (原始大小)"'],
+    ['children:"Preprocessed size"', 'children:"Preprocessed size (压缩后)"'],
+    ['children:"QR packets"', 'children:"QR packets (包数)"'],
+  ];
+  for (const [old, neu] of globals) {
+    if (!s2.includes(old)) throw new Error('UI global patch not found: ' + old.slice(0, 50));
+    s2 = s2.split(old).join(neu);
+  }
+  console.log('UI 中文化补丁: ' + (pairs.length + globals.length) + ' 处');
 }
 
 // ---- 3. 重新组装 ----

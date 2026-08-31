@@ -83,7 +83,7 @@ async function main() {
 
   // wait for app render
   const t0 = Date.now();
-  while (!(await evalJS(`!!(function(){var b=document.querySelectorAll('button');for(var i=0;i<b.length;i++)if(b[i].textContent.trim()==='Start Live QR')return b[i];})()`, false))) {
+  while (!(await evalJS(`!!(function(){var b=document.querySelectorAll('button');for(var i=0;i<b.length;i++)if(b[i].textContent.trim().startsWith('Start Live QR'))return b[i];})()`, false))) {
     if (Date.now() - t0 > 30000) throw new Error('app never rendered');
     await sleep(500);
   }
@@ -96,7 +96,7 @@ async function main() {
     const TEXT = ${JSON.stringify(TEXT)};
     const IS_COLOR = ${process.argv[2] === 'orig' ? 'false' : 'true'};
     const log = [];
-    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim()===t)return x;return null;}
+    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim().startsWith(t))return x;return null;}
     function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
     try {
       const tb = findBtn('Text'); if (tb) { tb.click(); log.push('text-tab'); }

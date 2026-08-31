@@ -92,8 +92,8 @@ const T = require('./test_tolerance.js');
   const okHeader = gd.subarray(0, 6).toString('ascii') === 'GIF89a';
   console.log('GIF: header=' + gd.subarray(0, 6).toString('ascii') + ' 尺寸=' + gif.width + 'x' + gif.height + ' 帧数=' + gif.frameCount + ' 大小=' + gd.length + 'B (' + ms + 'ms)');
   // 帧数应为 6（每包一帧）
-  console.log('GIF 帧数正确:', gif.frameCount === encoded.packets.length);
+  console.log('GIF 帧数正确(ceil(6/4)=2):', gif.frameCount === Math.ceil(encoded.packets.length / 4));
   console.log('GIF 头部正确:', okHeader);
-  console.log('gif worker 彩色路径:', (okHeader && gif.frameCount === encoded.packets.length && gif.width === 1088) ? 'PASS' : 'FAIL');
-  process.exit(okHeader && gif.frameCount === encoded.packets.length ? 0 : 1);
+  console.log('gif worker 彩色并行路径 (parallel=4 → 2176×2176, 2 帧):', (okHeader && gif.frameCount === Math.ceil(encoded.packets.length / 4) && gif.width === 2176 && gif.height === 2176) ? 'PASS' : 'FAIL');
+  process.exit(okHeader && gif.frameCount === Math.ceil(encoded.packets.length / 4) && gif.width === 2176 ? 0 : 1);
 })().catch(e => { console.error('FATAL:', e.message); process.exit(1); });

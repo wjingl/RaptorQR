@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>统计 — RaptorQR 发送管理</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="topbar" class="topbar"></div>
+  <div class="container">
+    <h1 class="page-title">统计（总管理）</h1>
+    <p class="page-sub">全局传出统计与每人统计</p>
+    <div id="alert" class="alert"></div>
+
+    <div class="stat-grid">
+      <div class="stat-card"><div class="num" id="sTotal">-</div><div class="label">传出次数</div></div>
+      <div class="stat-card"><div class="num" id="sBytes">-</div><div class="label">传出总大小</div></div>
+      <div class="stat-card"><div class="num" id="sDone">-</div><div class="label">已完成</div></div>
+      <div class="stat-card"><div class="num" id="sSending">-</div><div class="label">传输中</div></div>
+    </div>
+
+    <div class="card">
+      <h2>按目的地</h2>
+      <div class="table-wrap"><table><thead><tr><th>目的地</th><th>次数</th><th>大小</th><th>已完成</th></tr></thead><tbody id="destBody"></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>每人统计</h2>
+      <div class="table-wrap"><table><thead><tr><th>用户</th><th>次数</th><th>大小</th><th>已完成</th></tr></thead><tbody id="userBody"></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>每日趋势（近 30 天）</h2>
+      <div class="table-wrap"><table><thead><tr><th>日期</th><th>次数</th><th>大小</th></tr></thead><tbody id="dailyBody"></tbody></table></div>
+    </div>
+  </div>
+  <script src="/js/common.js"></script>
+  <script src="/js/stats.js"></script>
+</body>
+</html>

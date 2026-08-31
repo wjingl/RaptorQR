@@ -52,7 +52,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   // 等 File 标签渲染出文件输入框
   await evalJS(`(async () => {
-    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim()===t)return x;}
+    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim().startsWith(t))return x;}
     function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
     const t0 = Date.now();
     while (!findBtn('Start Live QR')) { if (Date.now() - t0 > 30000) return; await sleep(300); }
@@ -70,7 +70,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   const result = await evalJS(`(async () => {
     const log = [];
-    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim()===t)return x;return null;}
+    function findBtn(t){const b=document.querySelectorAll('button');for(const x of b)if(x.textContent.trim().startsWith(t))return x;return null;}
     function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
     try {
       const t0 = Date.now();

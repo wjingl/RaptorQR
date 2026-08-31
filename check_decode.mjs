@@ -641,7 +641,10 @@
     for (i = 0; i < w * h; i++, o += 4)
       gray[i] = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
 
-    var SCALE = Math.min(1, detTarget / Math.max(w, h));
+    // 检测降采样目标按帧尺寸自适应：并行网格大画布（如 2176×2176）每符号像素被摊薄，
+    // 检测目标随帧边长同比例提升（基准 1088 → detTarget，下限 512 上限 2048）
+    var effDet = Math.max(512, Math.min(2048, Math.round(detTarget * Math.max(w, h) / 1088)));
+    var SCALE = Math.min(1, effDet / Math.max(w, h));
     // 若图像过大，先缩小检测（detectFinders 直接在灰度上跑，此处按需）
     var sw = w, sh = h, sg = gray;
     var dw = w, dh = h, dg = gray;
@@ -660,8 +663,12 @@
     var cands = detectFinders(dg, dw, dh);
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'det', cands: cands.slice(0, 12).map(function(c){return {x:+c.x.toFixed(1), y:+c.y.toFixed(1), m:+c.module.toFixed(2), n:c.n};}) });
     if (cands.length < 3) return [];
+    // —— 多符号并行：同一帧可含多个 CimQR 符号（网格布局），逐符号解码，解完移除其寻像候选 ——
+    var packets = [];
+    var MAX_SYMBOLS = 8;
+    for (var symN = 0; symN < MAX_SYMBOLS; symN++) {
     var sel = selectTriple(cands);
-    if (!sel) return [];
+    if (!sel) break;
     var mod = sel.module;
     // 放大回原图坐标
     var tl = { x: sel.tl.x / SCALE, y: sel.tl.y / SCALE };
@@ -672,14 +679,14 @@
     tl = refineFinder(gray, w, h, tl.x, tl.y, modFull);
     tr = refineFinder(gray, w, h, tr.x, tr.y, modFull);
     bl = refineFinder(gray, w, h, bl.x, bl.y, modFull);
-    if (!tl || !tr || !bl) return [];
+    if (!tl || !tr || !bl) { cands = dropTriple(cands, sel); continue; }
     // 四个符号角点（寻像中心在符号坐标）
     var symTL = [28, 28], symTR = [988, 28], symBL = [28, 988], symBR = [988, 988];
     var imgTL = [tl.x, tl.y], imgTR = [tr.x, tr.y], imgBL = [bl.x, bl.y];
     // BR 用平行四边形估计
     var imgBR = [tl.x + (tr.x - tl.x) + (bl.x - tl.x), tl.y + (tr.y - tl.y) + (bl.y - tl.y)];
     var H = solveHomography([symTL, symTR, symBL, symBR], [imgTL, imgTR, imgBL, imgBR]);
-    if (!H) return [];
+    if (!H) { cands = dropTriple(cands, sel); continue; }
     // BR 对齐标记精化：检测第 4 角的真实位置（5×5 对齐图案，符号坐标中心 972,972），
     // 用 4 个真实角点重解单应 → 透视不再是平行四边形近似。
     // 判据：中心暗 + 半径 1 mod 处 8 点白色环带（数据区不存在 18px 宽白域，强区分）
@@ -926,14 +933,27 @@
       rsOut.set(dec, blk * RS_K);
     }
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'rs', anyFail: anyFail, failBlk: failBlk, bytes: Array.from(bytes.subarray(0, 8)) });
-    if (anyFail) return [];
+    if (anyFail) { cands = dropTriple(cands, sel); continue; }
     // 解析帧头
     var plen = rsOut[0] | (rsOut[1] << 8);
-    if (plen > MAX_PACKET || plen < 12) return [];
-    if (rsOut[2] !== MAGIC[0] || rsOut[3] !== MAGIC[1] || rsOut[4] !== FORMAT) return [];
+    if (plen > MAX_PACKET || plen < 12) { cands = dropTriple(cands, sel); continue; }
+    if (rsOut[2] !== MAGIC[0] || rsOut[3] !== MAGIC[1] || rsOut[4] !== FORMAT) { cands = dropTriple(cands, sel); continue; }
     var packet = new Uint8Array(plen);
     packet.set(rsOut.subarray(9, 9 + plen), 0);
-    return [packet];
+    packets.push(packet);
+    cands = dropTriple(cands, sel); // 该符号已解出，移除其 3 个寻像候选
+    } // for symN
+    return packets;
+  }
+
+  // 从候选列表中移除某符号三元组对应的 3 个寻像（按对象引用）
+  function dropTriple(cands, sel) {
+    var out = [];
+    for (var k = 0; k < cands.length; k++) {
+      var c = cands[k];
+      if (c !== sel.tl && c !== sel.tr && c !== sel.bl) out.push(c);
+    }
+    return out;
   }
 
   // 容错尝试阶梯：正常帧一次命中（零额外开销）；困难帧逐级加强
@@ -947,7 +967,10 @@
     [512, 6, true, false],
     [512, 7.5, false, false],
     [512, 4.5, true, true],
-    [768, 6, true, true]
+    [768, 6, true, true],
+    // 并行网格大画布（如 2176×2176）：每符号像素被摊薄，需更高检测分辨率
+    [2048, 6, true, true],
+    [2048, 7.5, false, true]
   ];
   function decodeFrame(rgba, w, h) {
     for (var a = 0; a < ATTEMPTS.length; a++) {

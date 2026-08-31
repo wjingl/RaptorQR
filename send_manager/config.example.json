@@ -1,0 +1,61 @@
+{
+  "host": "0.0.0.0",
+  "port": 1145,
+  "dataDir": "./data",
+  "publicUrl": "",
+  "session": {
+    "absoluteTtlHours": 12,
+    "idleTtlMinutes": 30
+  },
+  "lockout": {
+    "maxFails": 5,
+    "windowMinutes": 15,
+    "lockMinutes": 15
+  },
+  "captcha": {
+    "enabled": true,
+    "afterFailures": 2,
+    "ttlMinutes": 5
+  },
+  "password": {
+    "minLength": 8,
+    "maxLength": 64
+  },
+  "registration": {
+    "enabled": true
+  },
+  "batchRegister": {
+    "initialPassword": "RaptorQR@2026"
+  },
+  "admin": {
+    "bootstrap": {
+      "enabled": true,
+      "username": "",
+      "password": "",
+      "displayName": "总管理",
+      "forcePasswordChange": true
+    }
+  },
+  "destinations": ["jzw", "bgw", "my", "sjw"],
+  "limits": {
+    "jsonBody": 102400,
+    "batchBody": 1048576,
+    "uploadBody": 16777216,
+    "pageSize": 50,
+    "maxPageSize": 100,
+    "maxConnections": 256
+  },
+  "backup": {
+    "enabled": true,
+    "retentionDays": 7,
+    "maxFileBytes": 8388608
+  },
+  "https": {
+    "enabled": false,
+    "keyFile": "",
+    "certFile": ""
+  },
+  "security": {
+    "trustProxy": false
+  }
+}
