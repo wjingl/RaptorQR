@@ -56,7 +56,7 @@ let s1 = patchWorker(script1, 'qr_render', (code) => {
   const marker = 'let p,u,g;if(Ma(d)){';
   if (!code.includes(marker)) throw new Error('qr_render marker not found');
   code = code.replace(marker,
-    'let p,u,g;if(d==="color-cimbar"){const r0=CimQR.render(o);p=r0.data.buffer,u=r0.width,g=r0.height}else if(Ma(d)){');
+    'let p,u,g;if(d==="color-cimbar"){const r0=CimQR.render(o,a.scale||1);p=r0.data.buffer,u=r0.width,g=r0.height}else if(Ma(d)){');
   return code;
 });
 
@@ -72,12 +72,16 @@ s1 = patchWorker(s1, 'gif', (code) => {
   const ma = 'async function Ma(e,i,c,l,o="fast-qr-wasm"){switch(o){case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}';
   if (!code.includes(ma)) throw new Error('gif Ma not found');
   code = code.replace(ma,
-    'async function Ma(e,i,c,l,o="fast-qr-wasm"){switch(o){case"color-cimbar":{const r0=CimQR.render(new Uint8Array(e));return new ImageData(r0.data,r0.width,r0.height)}case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}');
-  // 帧尺寸与并行数（const 链内一次声明；彩色大瓦片 1088px，并行数同黑白——多路并发 GIF）
+    'async function Ma(e,i,c,l,o="fast-qr-wasm",s=1){switch(o){case"color-cimbar":{const r0=CimQR.render(new Uint8Array(e),s);return new ImageData(r0.data,r0.width,r0.height)}case"fast-qr-wasm":return Da(e,i,c,l);case"zxing-wasm":return sa(e,i,c,l)}}');
+  // 帧尺寸与并行数（const 链内一次声明；彩色大瓦片 1088×scale，并行数同黑白——多路并发 GIF）
   const q = 'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=A*$,z=ai(m)';
   if (!code.includes(q)) throw new Error('gif q not found');
   code = code.replace(q,
-    'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?1088:A*$),z=ai(m)');
+    'm=ei(e.parallelCount),y=o*4+17,b=360,A=y+8,$=Math.max(2,Math.round(b/A)),q=(w==="color-cimbar"?Math.round(1088*(e.scale||1)):A*$),z=ai(m)');
+  // Ma 调用传 scale（彩色尺寸倍率）
+  const macall = 'const Z=await Ma(i[J],o,h,$,w)';
+  if (!code.includes(macall)) throw new Error('gif Ma call not found');
+  code = code.replace(macall, 'const Z=await Ma(i[J],o,h,$,w,e.scale||1)');
   return code;
 });
 
@@ -89,11 +93,20 @@ s1 = patchWorker(s1, 'decode', (code) => {
   code = code.replace(ys,
     'async function ys(r){let cp=[];if(CimQR.maybeColor(r.data,r.width,r.height)){try{cp=CimQR.decode(r.data,r.width,r.height)||[]}catch(e2){cp=[]}}if(cp.length>0){let i=0;for(const by of cp){let s;try{s=Di(by)}catch{continue}if(await ws({version:0},s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b);return}' +
     'const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0)return;let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}');
+  // 实时帧"保最新"策略：解码处理中到达的实时帧不排队（相机 30fps 永远有新帧），
+  // 只保留最新一帧（pendingLatest），处理完立即跟进——消除积压与陈旧画面延迟
+  const msgs = 'function ms(r,n){if(n&&Ae.reduce((u,s)=>u+(s.realtime?1:0),0)>=hs){const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),gs()}async function gs(){if(!Xt){Xt=!0;try{for(;Ae.length>0;){const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[])}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}';
+  if (!code.includes(msgs)) throw new Error('decode ms/gs not found');
+  code = code.replace(msgs,
+    'var pendingLatest=null;function ms(r,n){if(n){if(Xt){pendingLatest=r;return}if(Ae.length===0){Ae.push({imageData:r,realtime:!0}),gs();return}const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),n||gs()}async function gs(){if(!Xt){Xt=!0;try{for(;;){if(pendingLatest){Ae.push({imageData:pendingLatest,realtime:!0}),pendingLatest=null}if(Ae.length===0)break;const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[],pendingLatest=null)}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}');
   return code;
 });
 
 // ---- 2. 修补主 bundle（script2）----
 let s2 = script2;
+
+// 2a0. 彩色符号尺寸（像素）模块变量：Standard 1088 / HD 2176，UI 下拉可调，Start 时生效
+s2 = 'var colorSizeVar=1088;' + s2;
 
 // 2a. 编码器列表
 {
@@ -120,7 +133,7 @@ let s2 = script2;
   const old = 'const f=t.version*4+17+so*2,u=Math.max(2,Math.round(lo/f)),y=f*u,R=Po(o),c=Array.from({length:e.length},(b,v)=>v);';
   if (!s2.includes(old)) throw new Error('xo not found');
   s2 = s2.replace(old,
-    'const f=t.version*4+17+so*2,u=n==="color-cimbar"?1:Math.max(2,Math.round(lo/f)),y=n==="color-cimbar"?1088:f*u,R=Po(o),c=Array.from({length:e.length},(b,v)=>v);');
+    'const f=t.version*4+17+so*2,u=n==="color-cimbar"?1:Math.max(2,Math.round(lo/f)),y=n==="color-cimbar"?(colorSizeVar||1088):f*u,R=Po(o),c=Array.from({length:e.length},(b,v)=>v);');
 }
 // 2d2. （已删除：parallelCount/displayFrameCount 原逻辑即正确——R=Po(o) 网格下各瓦片位置不重叠，
 //      彩色多路并发由 2d 的大瓦片 + 原逻辑天然支持；单包冻结问题根源是 R 被强制 1 而 parallelCount 仍为 o）
@@ -130,7 +143,23 @@ let s2 = script2;
   if (!s2.includes(old)) throw new Error('z=640 not found');
   s2 = s2.replace(old, 'E=h.videoHeight||640,z=1024,L=x/E;');
 }
-
+// 2e2. 彩色尺寸：xo scale 传倍率（render worker 用）+ gif 调用传 scale + UI 下拉
+{
+  const old = 'R.columns,rows:R.rows,version:t.version,eccLevel:t.eccLevel,qrEncoder:n,symbolSize:t.maxPayloadSize,scale:u,displayFrameCount:';
+  if (!s2.includes(old)) throw new Error('xo scale not found');
+  s2 = s2.replace(old, 'R.columns,rows:R.rows,version:t.version,eccLevel:t.eccLevel,qrEncoder:n,symbolSize:t.maxPayloadSize,scale:n==="color-cimbar"?(colorSizeVar||1088)/1088:u,displayFrameCount:');
+}
+{
+  const old = 'parallelCount:l.parallelCount,packetOrder:l.loopOrder})});if(g!==le.current)';
+  if (!s2.includes(old)) throw new Error('gif call not found');
+  s2 = s2.replace(old, 'parallelCount:l.parallelCount,packetOrder:l.loopOrder,scale:l.qrEncoder==="color-cimbar"?(colorSizeVar||1088)/1088:1})});if(g!==le.current)');
+}
+{
+  const old = 'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa';
+  if (!s2.includes(old)) throw new Error('encoder select not found');
+  s2 = s2.replace(old,
+    'children:Or.map(l=>r("option",{value:l,children:qt(l)},l))})]}),k==="color-cimbar"&&r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("span",{style:p.label,children:"Color size (彩色尺寸)"}),r("span",{style:p.infoValue,children:[colorSizeVar," px"]})]}),r("select",{style:p.select,onChange:l=>{colorSizeVar=Number(l.target.value)||1088},children:[r("option",{value:1088,children:"Standard (标准) 1088"}),r("option",{value:2176,children:"HD (高清) 2176"})]})]}),r("label",{children:[r("div",{style:{...p.row,justifyContent:"space-between",alignItems:"baseline"},children:[r("spa');
+}
 // 2f. UI 中文化：所有选项/按钮/区域标题 英文后附中文括号翻译
 {
   const pairs = [

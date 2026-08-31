@@ -82,7 +82,7 @@ function makeWorkerSandbox(srcFile, postFn) {
     if (seen.has(pkt)) { console.log(`  [帧 ${frameIdx} 重复包 ${pkt} → 去重丢弃]`); }
     seen.add(pkt);
     const fr = frames[pkt];
-    dec.dispatch({ type: 'frame', pixels: fr.data.buffer.slice(0), width: fr.width, height: fr.height, realtime: true });
+    dec.dispatch({ type: 'frame', pixels: fr.data.buffer.slice(0), width: fr.width, height: fr.height, realtime: false });
     await new Promise(r => setTimeout(r, 5)); // 模拟异步处理间隔
   };
 

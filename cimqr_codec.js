@@ -28,7 +28,7 @@
   var GRID = 112;      // 每边格数
   var IMG = 1024;      // 符号像素尺寸
   var CP = 7;          // 四角保留区（格）
-  var DATA_CELLS = 12152; // 数据格总数
+  var DATA_CELLS = 12032; // 数据格总数
   var HDR_CELLS = 12;  // 帧头占用格数（=9 字节）
   var RS_N = 155, RS_K = 125, RS_PARITY = 30;
   var COLOR_BITS = 2, SYMBOL_BITS = 4, BITS_PER_CELL = 6;
@@ -216,10 +216,15 @@
   // 数据格列表（行主序）：跳过四角块（7×7×4）与时序带（r=6/c=6）
   // → 112² - 196 - 196 = 12152 格
   var cellPos = (function () {
+    // 四角保留区按寻像图形实际占格对齐：finder 覆盖符号 32..88 = 格 2..8
+    // （旧版排除格 0..6 与 finder 右下重叠，低倍率 floor 量化下错误格超 RS 容量）
     var list = [], c, r;
     for (r = 0; r < GRID; r++) {
       for (c = 0; c < GRID; c++) {
-        var corner = (c < CP && r < CP) || (c >= GRID - CP && r < CP) || (c < CP && r >= GRID - CP) || (c >= GRID - CP && r >= GRID - CP);
+        var corner = (c <= 8 && r <= 8) ||
+                     (c >= GRID - 9 && r <= 8) ||
+                     (c <= 8 && r >= GRID - 9) ||
+                     (c >= GRID - 9 && r >= GRID - 9);
         var timing = (r === CP - 1 && c >= CP) || (c === CP - 1 && r >= CP);
         if (!corner && !timing) list.push(c + r * GRID);
       }
@@ -300,15 +305,16 @@
     return tiles;
   })();
 
-  function drawFinder(buf, x0, y0, stride) {
-    // 7×7 寻像图形，每模块 8px
+  function drawFinder(buf, x0, y0, stride, R) {
+    // 7×7 寻像图形，每模块 8px（×R 缩放）
+    R = R || 1;
     for (var y = 0; y < 7; y++) {
       for (var x = 0; x < 7; x++) {
         var dark = (y === 0 || y === 6 || x === 0 || x === 6) || (y >= 2 && y <= 4 && x >= 2 && x <= 4);
         var v = dark ? 0 : 255;
-        for (var py = 0; py < 8; py++)
-          for (var px = 0; px < 8; px++) {
-            var o = ((y0 + y * 8 + py) * stride + (x0 + x * 8 + px)) * 4;
+        for (var py = 0; py < 8 * R; py++)
+          for (var px = 0; px < 8 * R; px++) {
+            var o = ((y0 + y * 8 * R + py) * stride + (x0 + x * 8 * R + px)) * 4;
             buf[o] = v; buf[o + 1] = v; buf[o + 2] = v; buf[o + 3] = 255;
           }
       }
@@ -327,39 +333,41 @@
   var MARGIN = 32, RENDER_IMG = IMG + 2 * MARGIN;
   var CimQR_POP8 = null;
 
-  function renderFrame(packet) {
-    var buf = new Uint8ClampedArray(RENDER_IMG * RENDER_IMG * 4);
+  function renderFrame(packet, scale) {
+    var R = scale || 1; // 渲染倍率：1=1088px，0.5=544px（紧凑），2=2176px（高清）
+    var W2 = Math.round(RENDER_IMG * R);
+    var buf = new Uint8ClampedArray(W2 * W2 * 4);
     var x, y, o;
     // 背景白（静区）
     for (o = 0; o < buf.length; o += 4) { buf[o] = 255; buf[o + 1] = 255; buf[o + 2] = 255; buf[o + 3] = 255; }
-    var M = MARGIN;
+    var M = Math.round(MARGIN * R);
 
     // 三个寻像图形
-    drawFinder(buf, M + 0, M + 0, RENDER_IMG);       // TL
-    drawFinder(buf, M + IMG - 64, M + 0, RENDER_IMG); // TR
-    drawFinder(buf, M + 0, M + IMG - 64, RENDER_IMG); // BL
+    drawFinder(buf, M, M, W2, R);                                      // TL
+    drawFinder(buf, M + Math.floor((IMG - 64) * R), M, W2, R);         // TR
+    drawFinder(buf, M, M + Math.floor((IMG - 64) * R), W2, R);         // BL
     // 分隔带（白）
-    drawSolid(buf, M + 56, M + 0, 8, 64, 255, RENDER_IMG);
-    drawSolid(buf, M + 0, M + 56, 64, 8, 255, RENDER_IMG);
-    drawSolid(buf, M + 952, M + 0, 8, 64, 255, RENDER_IMG);
-    drawSolid(buf, M + 960, M + 56, 64, 8, 255, RENDER_IMG);
-    drawSolid(buf, M + 0, M + 952, 64, 8, 255, RENDER_IMG);
-    drawSolid(buf, M + 56, M + 960, 8, 64, 255, RENDER_IMG);
+    drawSolid(buf, M + Math.floor(56 * R), M, Math.floor(8 * R), Math.floor(64 * R), 255, W2);
+    drawSolid(buf, M, M + Math.floor(56 * R), Math.floor(64 * R), Math.floor(8 * R), 255, W2);
+    drawSolid(buf, M + Math.floor(952 * R), M, Math.floor(8 * R), Math.floor(64 * R), 255, W2);
+    drawSolid(buf, M + Math.floor(960 * R), M + Math.floor(56 * R), Math.floor(64 * R), Math.floor(8 * R), 255, W2);
+    drawSolid(buf, M, M + Math.floor(952 * R), Math.floor(64 * R), Math.floor(8 * R), 255, W2);
+    drawSolid(buf, M + Math.floor(56 * R), M + Math.floor(960 * R), Math.floor(8 * R), Math.floor(64 * R), 255, W2);
 
     // 时序图形（顶部 y=56..64，x=64..952；左侧 x=56..64，y=64..952）黑白交替
     for (var k = 0; k < 111; k++) {
       var dk = (k % 2 === 0);
-      if (64 + k * 8 < 952) drawSolid(buf, M + 64 + k * 8, M + 56, 8, 8, dk ? 0 : 255, RENDER_IMG);
-      if (64 + k * 8 < 952) drawSolid(buf, M + 56, M + 64 + k * 8, 8, 8, dk ? 0 : 255, RENDER_IMG);
+      if (64 + k * 8 < 952) drawSolid(buf, M + Math.floor((64 + k * 8) * R), M + Math.floor(56 * R), Math.floor(8 * R), Math.floor(8 * R), dk ? 0 : 255, W2);
+      if (64 + k * 8 < 952) drawSolid(buf, M + Math.floor(56 * R), M + Math.floor((64 + k * 8) * R), Math.floor(8 * R), Math.floor(8 * R), dk ? 0 : 255, W2);
     }
     // BR 辅助标记（QR 对齐图案 5×5，不影响数据格——该区域被排除）
     {
-      var bx = 952, by = 952;
+      var bx = Math.floor(952 * R), by = Math.floor(952 * R);
       for (y = 0; y < 5; y++)
         for (x = 0; x < 5; x++) {
           var bd = (y === 0 || y === 4 || x === 0 || x === 4) || (y === 2 && x === 2);
           var bv = bd ? 0 : 255;
-          drawSolid(buf, M + bx + x * 8, M + by + y * 8, 8, 8, bv, RENDER_IMG);
+          drawSolid(buf, M + bx + Math.floor(x * 8 * R), M + by + Math.floor(y * 8 * R), Math.floor(8 * R), Math.floor(8 * R), bv, W2);
         }
     }
 
@@ -389,24 +397,35 @@
     for (i = 0; i < DATA_CELLS; i++) cellVals[i] = br.read(BITS_PER_CELL);
 
     // 绘制数据格（流位置 i → 数据格下标 perm[i] → 网格坐标）
+    // 交集规则：图像像素 k 显示"其符号区间 [floor((k-M)/R), floor((k-M)/R)+1/R) 与格符号范围
+    // 交集下界"对应的 tile 像素——与解码端 floor(M+符号×R) 采样精确对齐，任意 R 一致
     for (i = 0; i < DATA_CELLS; i++) {
       var gridIdx = cellPos[perm[i]];
       var cc = gridIdx % GRID, cr = (gridIdx / GRID) | 0;
       var v = cellVals[i];
       var tile = tileCache[v >> SYMBOL_BITS][v & 15];
-      var x0 = M + OFFSET + cc * PITCH, y0 = M + OFFSET + cr * PITCH;
-      var ti = 0;
-      for (y = 0; y < 8; y++) {
-        var rowO = ((y0 + y) * RENDER_IMG + x0) * 4;
-        for (x = 0; x < 8; x++) {
-          var co = rowO + x * 4;
-          var r = tile[ti], g2 = tile[ti + 1], b2 = tile[ti + 2], a2 = tile[ti + 3];
-          if (a2) { buf[co] = r; buf[co + 1] = g2; buf[co + 2] = b2; buf[co + 3] = 255; }
-          ti += 4;
+      var x0 = M + Math.floor((OFFSET + cc * PITCH) * R), y0 = M + Math.floor((OFFSET + cr * PITCH) * R);
+      var gsx = OFFSET + cc * PITCH, gsy = OFFSET + cr * PITCH;
+      var span = Math.ceil(8 * R) + 1;
+      var invR = 1 / R;
+      for (var ky = y0; ky < y0 + span; ky++) {
+        var sY = Math.floor((ky - M) / R);
+        // 区间重叠判定：像素符号区间 [sY, sY+invR) 与格 [gsy, gsy+8) 相交
+        if (sY + invR <= gsy || sY >= gsy + 8) continue;
+        var tY = Math.max(sY, gsy) - gsy;
+        for (var kx = x0; kx < x0 + span; kx++) {
+          var sX = Math.floor((kx - M) / R);
+          if (sX + invR <= gsx || sX >= gsx + 8) continue;
+          var tX = Math.max(sX, gsx) - gsx;
+          var ti = (tY * 8 + tX) * 4;
+          if (tile[ti + 3]) {
+            var o = (ky * W2 + kx) * 4;
+            buf[o] = tile[ti]; buf[o + 1] = tile[ti + 1]; buf[o + 2] = tile[ti + 2]; buf[o + 3] = 255;
+          }
         }
       }
     }
-    return { data: buf, width: RENDER_IMG, height: RENDER_IMG };
+    return { data: buf, width: W2, height: W2 };
   }
 
   // ---------- 解码 ----------
@@ -473,58 +492,94 @@
     return best;
   }
 
+  // 单遍行扫描 + 行间投票检测寻像图形（1:1:3:1:1）：
+  // - 不逐候选做整行二次扫描（旧版每候选 3×O(w)，候选多时秒级）
+  // - 不做 O(n²) 合并；相邻行投票自然去重并给出亚像素质心
   function detectFinders(gray, w, h) {
-    var candidates = [];
-    var i, j, x, y;
-    var thr = 120;
-    var MIN_MODULE = 2.5;
-    for (y = 0; y < h; y += 1) {
-      var prevDark = null, run = 0;
-      var runs = [];
-      var base = y * w;
-      for (x = 0; x < w; x++) {
-        var dark = gray[base + x] < thr;
-        if (prevDark === null) { prevDark = dark; run = 1; }
-        else if (dark === prevDark) run++;
-        else { runs.push({ d: prevDark, l: run }); prevDark = dark; run = 1; }
-      }
-      if (run > 0) runs.push({ d: prevDark, l: run });
-      for (i = 0; i + 4 < runs.length; i++) {
-        if (!(runs[i].d && !runs[i + 1].d && runs[i + 2].d && !runs[i + 3].d && runs[i + 4].d)) continue;
-        var lens = [runs[i].l, runs[i + 1].l, runs[i + 2].l, runs[i + 3].l, runs[i + 4].l];
-        var module = lens[2] / 3;
-        if (module < MIN_MODULE || !ratioOK(lens)) continue;
-        var startX = 0;
-        for (j = 0; j < i; j++) startX += runs[j].l;
-        var centerX = startX + lens[0] + lens[1] + lens[2] / 2;
-        // 相邻行验证：±1 模块处也应出现 1:1:3:1:1 且中心接近
-        var rows = [y, Math.max(0, Math.round(y - module * 0.6)), Math.min(h - 1, Math.round(y + module * 0.6))];
-        var accX = 0, accY = 0, accW = 0, matched = 0;
-        for (j = 0; j < 3; j++) {
-          var m = matchRow(gray, w, rows[j], centerX, module, thr);
-          if (m) { accX += m.x; accY += rows[j]; accW++; matched++; }
+    var thr = 120, MIN_MODULE = 2.0;
+    var acc = [];   // 正在累积的候选 {x, module, y, n}
+    var out = [];
+    var x, y, j;
+    for (y = 0; y < h; y++) {
+      var line = scanFinderRow(gray, w, y, thr, MIN_MODULE);
+      // 与累积候选匹配（中心与模块尺寸接近）
+      var nextAcc = [];
+      for (j = 0; j < acc.length; j++) {
+        var c = acc[j], best2 = -1;
+        for (var k = 0; k < line.length; k++) {
+          var l = line[k];
+          if (Math.abs(l.x - c.x) <= c.module * 1.6 && Math.abs(l.module - c.module) <= c.module * 0.6) {
+            if (best2 < 0 || Math.abs(l.x - c.x) < Math.abs(line[best2].x - c.x)) best2 = k;
+          }
         }
-        if (matched < 2) continue;
-        candidates.push({ x: accX / accW, y: accY / accW, module: module });
+        if (best2 >= 0) {
+          c.n++; c.x = (c.x * (c.n - 1) + line[best2].x) / c.n;
+          c.module = (c.module * (c.n - 1) + line[best2].module) / c.n;
+          c.y = (c.y * (c.n - 1) + y) / c.n;
+          nextAcc.push(c);
+          line.splice(best2, 1);
+        } else if (c.n >= 3) {
+          out.push({ x: c.x, y: c.y, module: c.module, n: c.n });
+        }
+        // n<3 且失配：噪音，丢弃
+      }
+      for (j = 0; j < line.length; j++) {
+        var l2 = line[j];
+        nextAcc.push({ x: l2.x, module: l2.module, y: y, n: 1 });
+      }
+      acc = nextAcc;
+    }
+    for (j = 0; j < acc.length; j++) if (acc[j].n >= 3) out.push({ x: acc[j].x, y: acc[j].y, module: acc[j].module, n: acc[j].n });
+    return out;
+  }
+
+  // 单行扫描，返回该行所有 1:1:3:1:1 图案中心（无对象化 run 编码，栈式累积）
+  function scanFinderRow(gray, w, y, thr, minModule) {
+    var base = y * w;
+    var d0 = 0, l0 = 0, d1 = 0, l1 = 0, d2 = 0, l2 = 0, d3 = 0, l3 = 0, d4 = 0, l4 = 0;
+    var have = 0; // 已编码 run 段数（0..4 环形缓冲）
+    var out = [];
+    var prevDark = -1, run = 0;
+    var x;
+    for (x = 0; x < w; x++) {
+      var dark = gray[base + x] < thr ? 1 : 0;
+      if (prevDark === -1) { prevDark = dark; run = 1; continue; }
+      if (dark === prevDark) { run++; continue; }
+      // 段结束：推入环形缓冲
+      if (have < 5) {
+        if (have === 0) { d0 = prevDark; l0 = run; }
+        else if (have === 1) { d1 = prevDark; l1 = run; }
+        else if (have === 2) { d2 = prevDark; l2 = run; }
+        else if (have === 3) { d3 = prevDark; l3 = run; }
+        else { d4 = prevDark; l4 = run; }
+        have++;
+      } else {
+        d0 = d1; l0 = l1; d1 = d2; l1 = l2; d2 = d3; l2 = l3; d3 = d4; l3 = l4; d4 = prevDark; l4 = run;
+      }
+      prevDark = dark; run = 1;
+      // 检查当前 5 段是否 1:1:3:1:1（暗亮暗亮暗）
+      if (have === 5 && d0 && !d1 && d2 && !d3 && d4) {
+        var m = l2 / 3;
+        if (m >= minModule && l1 >= m * 0.5 && l1 <= m * 2.5 && l3 >= m * 0.5 && l3 <= m * 2.5 &&
+            l0 >= m * 0.5 && l0 <= m * 3 && l4 >= m * 0.5 && l4 <= m * 3) {
+          out.push({ x: x - run - l4 - l3 - l2 / 2, module: m });
+        }
       }
     }
-    // 合并相近候选（按模块尺寸加权平均）
-    var merged = [];
-    for (i = 0; i < candidates.length; i++) {
-      var c1 = candidates[i], found = false;
-      for (j = 0; j < merged.length; j++) {
-        var c2 = merged[j];
-        if (Math.abs(c1.x - c2.x) < c2.module * 1.8 && Math.abs(c1.y - c2.y) < c2.module * 1.8) {
-          var n = c2.n || 1;
-          c2.x = (c2.x * n + c1.x) / (n + 1);
-          c2.y = (c2.y * n + c1.y) / (n + 1);
-          c2.module = (c2.module * n + c1.module) / (n + 1);
-          c2.n = n + 1; found = true; break;
+    // 行尾 flush 最后一段
+    if (prevDark !== -1 && have === 5) {
+      if (have === 5) {
+        d0 = d1; l0 = l1; d1 = d2; l1 = l2; d2 = d3; l2 = l3; d3 = d4; l3 = l4; d4 = prevDark; l4 = run;
+        if (d0 && !d1 && d2 && !d3 && d4) {
+          var m2 = l2 / 3;
+          if (m2 >= minModule && l1 >= m2 * 0.5 && l1 <= m2 * 2.5 && l3 >= m2 * 0.5 && l3 <= m2 * 2.5 &&
+              l0 >= m2 * 0.5 && l0 <= m2 * 3 && l4 >= m2 * 0.5 && l4 <= m2 * 3) {
+            out.push({ x: w - run - l4 - l3 - l2 / 2, module: m2 });
+          }
         }
       }
-      if (!found) merged.push({ x: c1.x, y: c1.y, module: c1.module, n: 1 });
     }
-    return merged.filter(function (c) { return c.n >= 2; });
+    return out;
   }
 
   // 从候选里选三个寻像图形（L 形：直角顶点为 TL）
@@ -608,28 +663,58 @@
     } };
   }
 
-  // 全分辨率精化寻像中心（旋转鲁棒）：在估计位置附近的多行/多列匹配取加权平均
+  // 全分辨率精化寻像中心：局部窗口内双向 run 匹配（行向修正 x、列向修正 y），
+  // 对初始估计误差鲁棒（窗口覆盖 ±3.2m，全行扫描的 1/20 开销）
   function refineFinder(gray, w, h, cx, cy, module) {
-    var thr = 120, i, row, col;
-    var accX = 0, accY = 0, accW = 0;
-    var offsets = [-1.2, -0.6, 0, 0.6, 1.2];
-    for (i = 0; i < offsets.length; i++) {
-      row = Math.round(cy + offsets[i] * module);
-      if (row < 0 || row >= h) continue;
-      var m = matchRow(gray, w, row, cx, module, thr);
-      if (m) { accX += m.x * m.module; accY += row * m.module; accW += m.module; }
+    var thr = 120, i, j;
+    // 行向窗口 run 收集 + 找 1:1:3:1:1 中心（局部变量 i2/j2，勿用外层 i/j 避免闭包冲突）
+    function scanWindow(axis, fix, lo, hi) {
+      var runsD = [], runsL = [], prevDark = -1, run = 0;
+      var i2, j2, p;
+      for (p = lo; p <= hi; p++) {
+        var g = axis === 0 ? gray[fix * w + p] : gray[p * w + fix];
+        var dark = g < thr ? 1 : 0;
+        if (prevDark === -1) { prevDark = dark; run = 1; }
+        else if (dark === prevDark) run++;
+        else { runsD.push(prevDark); runsL.push(run); prevDark = dark; run = 1; }
+      }
+      if (prevDark !== -1) { runsD.push(prevDark); runsL.push(run); }
+      var best = null, bestM = 0;
+      for (i2 = 0; i2 + 4 < runsD.length; i2++) {
+        if (!(runsD[i2] && !runsD[i2 + 1] && runsD[i2 + 2] && !runsD[i2 + 3] && runsD[i2 + 4])) continue;
+        var m = runsL[i2 + 2] / 3;
+        if (m < 1.5 || m < bestM) continue;
+        if (!(runsL[i2 + 1] >= m * 0.5 && runsL[i2 + 1] <= m * 2.5 && runsL[i2 + 3] >= m * 0.5 && runsL[i2 + 3] <= m * 2.5 &&
+              runsL[i2] >= m * 0.5 && runsL[i2] <= m * 3 && runsL[i2 + 4] >= m * 0.5 && runsL[i2 + 4] <= m * 3)) continue;
+        var start = 0;
+        for (j2 = 0; j2 < i2; j2++) start += runsL[j2];
+        var c = lo + start + runsL[i2] + runsL[i2 + 1] + m * 1.5; // 全局坐标（窗口起点 lo 偏移）
+        if (Math.abs(c - (axis === 0 ? cx : cy)) > m * 2.5) continue; // 窗口内就近匹配
+        best = c; bestM = m;
+      }
+      return best === null ? null : { c: best, m: bestM };
     }
-    if (accW < module * 2) return null;
-    var rx = accX / accW, ry = accY / accW;
-    accX = 0; accY = 0; accW = 0;
-    for (i = 0; i < offsets.length; i++) {
-      col = Math.round(rx + offsets[i] * module);
-      if (col < 0 || col >= w) continue;
-      var m2 = matchCol(gray, w, h, col, ry, module, thr);
-      if (m2) { accX += col * m2.module; accY += m2.y * m2.module; accW += m2.module; }
+    var R = 3.2 * module;
+    // 行向：3 行投票修正 x（module 一并更新）
+    var accX = 0, accW = 0, modSum = 0, modN = 0;
+    for (j = -1; j <= 1; j++) {
+      var ry = Math.round(cy + j * module * 0.7);
+      if (ry < 0 || ry >= h) continue;
+      var mh = scanWindow(0, ry, Math.max(0, Math.round(cx - R)), Math.min(w - 1, Math.round(cx + R)));
+      if (mh) { accX += mh.c; accW++; modSum += mh.m; modN++; }
     }
-    if (accW < module * 2) return null;
-    return { x: accX / accW, y: accY / accW };
+    if (accW < 2) return null;
+    var rx = accX / accW, mod2 = modSum / modN;
+    // 列向：3 列投票修正 y
+    var accY = 0; accW = 0;
+    for (j = -1; j <= 1; j++) {
+      var cx2 = Math.round(rx + j * mod2 * 0.7);
+      if (cx2 < 0 || cx2 >= w) continue;
+      var mv = scanWindow(1, cx2, Math.max(0, Math.round(cy - R)), Math.min(h - 1, Math.round(cy + R)));
+      if (mv) { accY += mv.c; accW++; }
+    }
+    if (accW < 2) return null;
+    return { x: rx, y: accY / accW };
   }
 
   // 单次解码尝试：detTarget=检测用降采样目标边长，INNER=格内采样跨度（越小越抗模糊/混色），
@@ -642,7 +727,7 @@
       gray[i] = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
 
     // 检测降采样目标按帧尺寸自适应：并行网格大画布（如 2176×2176）每符号像素被摊薄，
-    // 检测目标随帧边长同比例提升（基准 1088 → detTarget，下限 512 上限 2048）
+    // 检测目标随帧边长同比例提升（基准 768 → detTarget，下限 512 上限 2048）
     var effDet = Math.max(512, Math.min(2048, Math.round(detTarget * Math.max(w, h) / 1088)));
     var SCALE = Math.min(1, effDet / Math.max(w, h));
     // 若图像过大，先缩小检测（detectFinders 直接在灰度上跑，此处按需）
@@ -666,6 +751,7 @@
     // —— 多符号并行：同一帧可含多个 CimQR 符号（网格布局），逐符号解码，解完移除其寻像候选 ——
     var packets = [];
     var MAX_SYMBOLS = 8;
+    var firstH = null;
     for (var symN = 0; symN < MAX_SYMBOLS; symN++) {
     var sel = selectTriple(cands);
     if (!sel) break;
@@ -747,9 +833,12 @@
     // 格子在图像中的像素跨度（8 符号像素经 H 映射）
     var cp0 = H.map(0, 0), cp8 = H.map(8, 0);
     var cellPx = Math.hypot(cp8[0] - cp0[0], cp8[1] - cp0[1]);
-    var NSP = Math.max(2, Math.min(8, Math.round(cellPx)));
+    // NSP 上限 6：16 模板在 6×6 采样网格下仍两两可区分（最小汉明距 18/64），采样点 36 vs 64 省 44%
+    var NSP = Math.max(2, Math.min(6, Math.round(cellPx)));
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) { var __o = self.__CIMQR_DEBUG__({ phase: 'nsp', NSP: NSP, cellPx: cellPx }); if (self.__CIMQR_FORCE_NSP__) NSP = self.__CIMQR_FORCE_NSP__; }
     var nsq = NSP * NSP;
+    // 单应系数局部展开（采样热循环内联用，避免 H.map 每次分配数组）
+    var h0 = H.h[0], h1 = H.h[1], h2 = H.h[2], h3 = H.h[3], h4 = H.h[4], h5 = H.h[5], h6 = H.h[6], h7 = H.h[7];
     // 采样格内圈：INNER<8 时采样点向格中心收缩，避开格边缘与 1px 空隙的混色/模糊污染
     var INNER_OFF = (8 - INNER) / 2;
     var px = new Float64Array(nsq), py = new Float64Array(nsq);
@@ -818,13 +907,16 @@
       if (soft) {
         // —— 软判决：连续彩色度 + 模板相关打分，抗重采样/模糊的边界侵蚀 ——
         // 每采样点做 2×2 邻域平均（面积采样），提升模糊/重采样下的色度信噪比
+        // 单应内联（避免每次调用分配数组）
         var maxCh = 0;
         for (var q = 0; q < nsq; q++) {
-          var pq = H.map(ox + px[q], oy + py[q]);
+          var mx2 = ox + px[q], my2 = oy + py[q];
+          var wden = h6 * mx2 + h7 * my2 + 1;
+          var pqx = (h0 * mx2 + h1 * my2 + h2) / wden, pqy = (h3 * mx2 + h4 * my2 + h5) / wden;
           var rq = 0, gq = 0, bq = 0, nv = 0;
           for (var dy2 = -1; dy2 <= 1; dy2 += 2)
             for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
-              var xq = Math.floor(pq[0] + dx2 * 0.5), yq = Math.floor(pq[1] + dy2 * 0.5);
+              var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
               if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
               var oq = yq * stride + xq * 4;
               rq += rgba[oq]; gq += rgba[oq + 1]; bq += rgba[oq + 2]; nv++;
@@ -876,9 +968,12 @@
         continue;
       }
       for (var sp = 0; sp < nsq; sp++) {
-        var p = H.map(ox + px[sp], oy + py[sp]);
+        // 单应内联（避免每次调用分配数组）
+        var mx2 = ox + px[sp], my2 = oy + py[sp];
+        var wden = h6 * mx2 + h7 * my2 + 1;
+        var sx2 = (h0 * mx2 + h1 * my2 + h2) / wden, sy2 = (h3 * mx2 + h4 * my2 + h5) / wden;
         // floor 而非 round：round(x+0.5) 会偏到下一格（越界到格间空隙）
-        var xi = Math.floor(p[0]), yi = Math.floor(p[1]);
+        var xi = Math.floor(sx2), yi = Math.floor(sy2);
         if (xi < 0 || yi < 0 || xi >= w || yi >= h) { bad = true; break; }
         var oi = yi * stride + xi * 4;
         var r = rgba[oi], g = rgba[oi + 1], b = rgba[oi + 2];
@@ -899,7 +994,7 @@
         patHi = (patHi << 1) | ((patLo >>> 31) & 1);
         patLo = ((patLo << 1) | bit) >>> 0;
       }
-      if (bad || cnt < Math.max(2, nsq * 0.08)) { vals[i] = 255; continue; } // 采样失败 → 用 RS 纠
+      if (bad || cnt < Math.max(2, nsq * 0.08)) { vals[i] = 255;  continue; } // 采样失败 → 用 RS 纠
       // 格子颜色 = 彩色点多数色
       var bestC = 0;
       for (var cl = 1; cl < 4; cl++) if (colVotes[cl] > colVotes[bestC]) bestC = cl;
@@ -941,9 +1036,196 @@
     var packet = new Uint8Array(plen);
     packet.set(rsOut.subarray(9, 9 + plen), 0);
     packets.push(packet);
+    if (!firstH) firstH = H; // 记录首个符号的单应（供帧间复用）
     cands = dropTriple(cands, sel); // 该符号已解出，移除其 3 个寻像候选
     } // for symN
+    _lastH = packets.length === 1 ? firstH : null; // 仅单符号帧缓存单应（并行帧每次全检测）
     return packets;
+  }
+
+  // —— 帧间复用：跳过检测，直接用缓存单应采样解码（相机静止/微抖时相邻帧画面几乎不变）——
+  // 复制精简版采样+RS+帧头流程（单符号），命中 ~15-25ms/帧
+  var _lastH = null; // {x..} 由 decodeAttempt 成功时写入；decodeFrame 优先尝试
+  function decodeFromH(rgba, w, h, H, INNER, soft) {
+    var i;
+    var vals = new Uint8Array(DATA_CELLS);
+    var stride = w * 4;
+    var cp0 = H.map(0, 0), cp8 = H.map(8, 0);
+    var cellPx = Math.hypot(cp8[0] - cp0[0], cp8[1] - cp0[1]);
+    var NSP = Math.max(2, Math.min(6, Math.round(cellPx)));
+    var nsq = NSP * NSP;
+    var INNER_OFF = (8 - INNER) / 2;
+    var px = new Float64Array(nsq), py = new Float64Array(nsq);
+    for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP) + 0.5) / NSP * INNER; }
+    var pop8 = CimQR_POP8 || (function () {
+      var t = new Uint8Array(256), j, c;
+      for (j = 0; j < 256; j++) { c = 0; for (var k = j; k; k &= k - 1) c++; t[j] = c; }
+      CimQR_POP8 = t;
+      return t;
+    })();
+    var tpl = [];
+    for (var s = 0; s < 16; s++) {
+      var hi = 0, lo = 0;
+      for (var sp = 0; sp < nsq; sp++) {
+        var spx = Math.min(7, Math.floor((INNER_OFF + ((sp % NSP) + 0.5) / NSP * INNER)));
+        var spy = Math.min(7, Math.floor((INNER_OFF + ((sp / NSP) + 0.5) / NSP * INNER)));
+        var bit = Number((PATTERNS[s] >> BigInt(63 - (spy * 8 + spx))) & 1n);
+        hi = (hi << 1) | ((lo >>> 31) & 1);
+        lo = ((lo << 1) | bit) >>> 0;
+      }
+      tpl.push([hi >>> 0, lo]);
+    }
+    var hueTable = (function () {
+      var t = new Array(361).fill(-1), j;
+      function addHue(hueDeg, colorIdx) {
+        var hh = Math.round(hueDeg) % 360;
+        for (var d = 0; d <= 6; d++) { t[(hh + d) % 360] = colorIdx; t[(hh - d + 360) % 360] = colorIdx; }
+      }
+      addHue(60, 2); addHue(120, 0); addHue(180, 1); addHue(300, 3);
+      return t;
+    })();
+    var CHROMA_THR = 24;
+    var colVotes = [0, 0, 0, 0];
+    function pop32(x) { return pop8[x & 255] + pop8[(x >>> 8) & 255] + pop8[(x >>> 16) & 255] + pop8[(x >>> 24) & 255]; }
+    var h0 = H.h[0], h1 = H.h[1], h2 = H.h[2], h3 = H.h[3], h4 = H.h[4], h5 = H.h[5], h6 = H.h[6], h7 = H.h[7];
+    var softLit = null;
+    if (soft) {
+      softLit = [];
+      for (var s2 = 0; s2 < 16; s2++) {
+        var mhi = 0, mlo = 0, lc = 0;
+        for (var sp2 = 0; sp2 < nsq; sp2++) {
+          var spx2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 % NSP) + 0.5) / NSP * INNER)));
+          var spy2 = Math.min(7, Math.floor((INNER_OFF + ((sp2 / NSP) + 0.5) / NSP * INNER)));
+          var bit2 = Number((PATTERNS[s2] >> BigInt(63 - (spy2 * 8 + spx2))) & 1n);
+          mhi = (mhi << 1) | ((mlo >>> 31) & 1);
+          mlo = ((mlo << 1) | bit2) >>> 0;
+          if (bit2) lc++;
+        }
+        softLit.push([mhi >>> 0, mlo, lc]);
+      }
+    }
+    var sR = soft ? new Float64Array(nsq) : null, sG = soft ? new Float64Array(nsq) : null, sB = soft ? new Float64Array(nsq) : null, sC = soft ? new Float64Array(nsq) : null;
+    for (i = 0; i < DATA_CELLS; i++) {
+      var gridIdx = cellPos[i];
+      var cc = gridIdx % GRID, cr = (gridIdx / GRID) | 0;
+      var ox = OFFSET + cc * PITCH, oy = OFFSET + cr * PITCH;
+      var patHi = 0, patLo = 0, bad = false, cnt = 0;
+      colVotes[0] = colVotes[1] = colVotes[2] = colVotes[3] = 0;
+      if (soft) {
+        var maxCh = 0;
+        for (var q = 0; q < nsq; q++) {
+          var mx2 = ox + px[q], my2 = oy + py[q];
+          var wden = h6 * mx2 + h7 * my2 + 1;
+          var pqx = (h0 * mx2 + h1 * my2 + h2) / wden, pqy = (h3 * mx2 + h4 * my2 + h5) / wden;
+          var rq = 0, gq = 0, bq = 0, nv = 0;
+          for (var dy2 = -1; dy2 <= 1; dy2 += 2)
+            for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
+              var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
+              if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
+              var oq = yq * stride + xq * 4;
+              rq += rgba[oq]; gq += rgba[oq + 1]; bq += rgba[oq + 2]; nv++;
+            }
+          if (!nv) { bad = true; break; }
+          rq /= nv; gq /= nv; bq /= nv;
+          var mxq = rq > gq ? (rq > bq ? rq : bq) : (gq > bq ? gq : bq);
+          var mnq = rq < gq ? (rq < bq ? rq : bq) : (gq < bq ? gq : bq);
+          var chq = mxq - mnq;
+          sR[q] = rq; sG[q] = gq; sB[q] = bq; sC[q] = chq;
+          if (chq > maxCh) maxCh = chq;
+        }
+        if (bad || maxCh < CHROMA_THR * 0.7) { vals[i] = 255; continue; }
+        var cfSum = 0;
+        for (q = 0; q < nsq; q++) { sC[q] = sC[q] / maxCh; cfSum += sC[q]; }
+        var bestSym2 = 0, bestD2 = Infinity;
+        for (var s3 = 0; s3 < 16; s3++) {
+          var L = softLit[s3];
+          var dotv = 0;
+          for (q = 0; q < nsq; q++) {
+            var pos = nsq - 1 - q;
+            var lit = pos >= 32 ? (L[0] >>> (pos - 32)) & 1 : (L[1] >>> pos) & 1;
+            if (lit) dotv += sC[q];
+          }
+          var d3 = L[2] - 2 * dotv + cfSum;
+          if (d3 < bestD2) { bestD2 = d3; bestSym2 = s3; }
+        }
+        if (bestD2 > nsq * 0.45) { vals[i] = 255; continue; }
+        var cmax = 0;
+        for (q = 0; q < nsq; q++) {
+          if (sC[q] < 0.4) continue;
+          var r2 = sR[q], g2 = sG[q], b2 = sB[q];
+          var mx2 = r2 > g2 ? (r2 > b2 ? r2 : b2) : (g2 > b2 ? g2 : b2);
+          var mn2 = r2 < g2 ? (r2 < b2 ? r2 : b2) : (g2 < b2 ? g2 : b2);
+          var ch2 = mx2 - mn2;
+          if (ch2 < CHROMA_THR) continue;
+          var hue2;
+          if (mx2 === r2) hue2 = ((g2 - b2) / ch2) * 60;
+          else if (mx2 === g2) hue2 = 120 + ((b2 - r2) / ch2) * 60;
+          else hue2 = 240 + ((r2 - g2) / ch2) * 60;
+          if (hue2 < 0) hue2 += 360;
+          var ci2 = hueTable[Math.round(hue2) % 360];
+          if (ci2 >= 0) colVotes[ci2] += sC[q];
+        }
+        for (var cl2 = 1; cl2 < 4; cl2++) if (colVotes[cl2] > colVotes[cmax]) cmax = cl2;
+        if (colVotes[cmax] < 0.01) { vals[i] = 255; continue; }
+        vals[i] = (cmax << SYMBOL_BITS) | bestSym2;
+        continue;
+      }
+      for (var sp = 0; sp < nsq; sp++) {
+        var mx2 = ox + px[sp], my2 = oy + py[sp];
+        var wden = h6 * mx2 + h7 * my2 + 1;
+        var sx2 = (h0 * mx2 + h1 * my2 + h2) / wden, sy2 = (h3 * mx2 + h4 * my2 + h5) / wden;
+        var xi = Math.floor(sx2), yi = Math.floor(sy2);
+        if (xi < 0 || yi < 0 || xi >= w || yi >= h) { bad = true; break; }
+        var oi = yi * stride + xi * 4;
+        var r = rgba[oi], g = rgba[oi + 1], b = rgba[oi + 2];
+        var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        var chroma = mx - mn;
+        var bit = 0;
+        if (chroma >= CHROMA_THR) {
+          var hue;
+          if (mx === r) hue = ((g - b) / chroma) * 60;
+          else if (mx === g) hue = 120 + ((b - r) / chroma) * 60;
+          else hue = 240 + ((r - g) / chroma) * 60;
+          if (hue < 0) hue += 360;
+          var cIdx = hueTable[Math.round(hue) % 360];
+          if (cIdx >= 0) { colVotes[cIdx]++; cnt++; bit = 1; }
+        }
+        patHi = (patHi << 1) | ((patLo >>> 31) & 1);
+        patLo = ((patLo << 1) | bit) >>> 0;
+      }
+      if (bad || cnt < Math.max(2, nsq * 0.08)) { vals[i] = 255;  continue; }
+      var bestC = 0;
+      for (var cl = 1; cl < 4; cl++) if (colVotes[cl] > colVotes[bestC]) bestC = cl;
+      if (colVotes[bestC] < Math.max(1, nsq * 0.04)) { vals[i] = 255; continue; }
+      var bestSym = 0, bestD = nsq + 1;
+      for (var s = 0; s < 16; s++) {
+        var d = pop32((patHi ^ tpl[s][0]) >>> 0) + pop32((patLo ^ tpl[s][1]) >>> 0);
+        if (d < bestD) { bestD = d; bestSym = s; }
+      }
+      vals[i] = (bestC << SYMBOL_BITS) | bestSym;
+    }
+    // 反交织 → 位流 → 字节流
+    var bw = new BitWriter();
+    var failCount = 0;
+    for (i = 0; i < DATA_CELLS; i++) {
+      var val = vals[perm[i]];
+      if (val === 255) failCount++;
+      bw.write(val === 255 ? 0 : val, BITS_PER_CELL);
+    }
+    var bytes = new Uint8Array(bw.finish());
+    var rsOut = new Uint8Array(58 * RS_K);
+    for (var blk = 0; blk < 58; blk++) {
+      var dec = rsDecode(bytes.subarray(blk * RS_N, blk * RS_N + RS_N));
+      if (!dec) return [];
+      rsOut.set(dec, blk * RS_K);
+    }
+    var plen = rsOut[0] | (rsOut[1] << 8);
+    if (plen > MAX_PACKET || plen < 12) return [];
+    if (rsOut[2] !== MAGIC[0] || rsOut[3] !== MAGIC[1] || rsOut[4] !== FORMAT) return [];
+    var packet = new Uint8Array(plen);
+    packet.set(rsOut.subarray(9, 9 + plen), 0);
+    return [packet];
   }
 
   // 从候选列表中移除某符号三元组对应的 3 个寻像（按对象引用）
@@ -973,6 +1255,13 @@
     [2048, 7.5, false, true]
   ];
   function decodeFrame(rgba, w, h) {
+    // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
+    if (_lastH) {
+      var fast;
+      try { fast = decodeFromH(rgba, w, h, _lastH, 7.5, false); } catch (e) { fast = []; }
+      if (fast && fast.length) return fast;
+      // 复用失败（画面变化/切包）：继续完整检测，_lastH 会被新成功帧刷新
+    }
     for (var a = 0; a < ATTEMPTS.length; a++) {
       var out;
       try { out = decodeAttempt(rgba, w, h, ATTEMPTS[a][0], ATTEMPTS[a][1], ATTEMPTS[a][2], ATTEMPTS[a][3]); } catch (e) { out = null; }
