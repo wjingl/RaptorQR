@@ -7,7 +7,7 @@ const http = require('http');
 
 const TARGET = process.argv[2] === 'orig' ? 'RaptorQR_离线单文件版.html' : 'RaptorQR_彩色版.html';
 const OUT_JSON = process.argv[2] === 'orig' ? 'cdp_orig_result.json' : 'cdp_capture.json';
-const PORT = 9333;
+const PORT = 9300 + Math.floor(Math.random() * 200);
 const PROFILE = process.envTEMP || 'C:/Temp';
 
 // ~33KB text -> several packets at 7229 B/frame
@@ -29,6 +29,7 @@ async function main() {
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
   const prof = fs.mkdtempSync(process.env.TEMP + '/edge_cdp_');
   const proc = spawn(edge, [
+    '--remote-allow-origins=*',
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1400,2400',
     '--allow-file-access-from-files',
@@ -220,7 +221,7 @@ async function main() {
   console.log('saved ->', OUT_JSON, 'frames:', (result.frames || []).length);
 
   ws.close();
-  proc.kill();
+  require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
   process.exit(0);
 }
 

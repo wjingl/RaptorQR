@@ -2,7 +2,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
-const PORT = 9334;
+const PORT = 9300 + Math.floor(Math.random() * 200);
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
@@ -15,6 +15,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
   const prof = fs.mkdtempSync(process.env.TEMP + '/edge_cdp2_');
   const proc = spawn(edge, [
+    '--remote-allow-origins=*',
     '--headless=new', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1400,2400',
     '--allow-file-access-from-files',
@@ -114,6 +115,6 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   console.log('worker msgs (' + result.msgCount + '):');
   for (const m of result.msgs.slice(0, 40)) console.log('  ' + m);
   ws.close();
-  proc.kill();
+  require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
   process.exit(0);
 })().catch(e => { console.error('FATAL:', e.message); process.exit(1); });

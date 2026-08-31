@@ -2,7 +2,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
-const PORT = 9335;
+const PORT = 9300 + Math.floor(Math.random() * 200);
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
@@ -21,6 +21,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
   const prof = fs.mkdtempSync(process.env.TEMP + '/edge_cdp3_');
   const proc = spawn(edge, [
+    '--remote-allow-origins=*',
     '--headless=new', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1400,2400',
     '--allow-file-access-from-files',
@@ -96,6 +97,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
       await sleep(300);
       findBtn('Start Live QR').click();
       log.push('started');
+      { const tP = Date.now(); while (Date.now() - tP < 15000) { await sleep(1000); let st=''; for (const el of document.querySelectorAll('div,span')) { const t=el.textContent||''; if (/Encoding|Encoded|Live QR running|Rendering|Please/.test(t) && t.length<140) { st=t.trim(); break; } } const cv2=document.querySelector('canvas.qr-live-canvas'); log.push('t+'+((Date.now()-tP)/1000).toFixed(0)+'s st='+(st||'-')+' canvas='+(cv2?cv2.width+'x'+cv2.height:'none')); if (cv2 && cv2.width) break; } }
       // wait painted
       let cv = null;
       const t1 = Date.now();
@@ -104,7 +106,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
         cv = document.querySelector('canvas.qr-live-canvas');
         if (cv) { const c = cv.getContext('2d'); const d = c.getImageData(0,0,cv.width,cv.height).data; let pn=0; for (let i=3;i<d.length;i+=9973) if (d[i]>0) pn++; if (pn < 100) cv = null; }
       }
-      if (!cv) return { ok:false, log:'no canvas' };
+      if (!cv) return { ok:false, log, why:'no canvas' };
       log.push('canvas live');
       // 捕获不同帧（轮询 60ms，去重）
       const fp = (c) => {
@@ -138,6 +140,6 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     console.log('saved cdp_multipacket.json');
   }
   ws.close();
-  proc.kill();
+  require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
   process.exit(0);
 })().catch(e => { console.error('FATAL:', e.message); process.exit(1); });

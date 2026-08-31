@@ -2,7 +2,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
-const PORT = 9336;
+const PORT = 9300 + Math.floor(Math.random() * 200);
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
@@ -22,6 +22,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
   const prof = fs.mkdtempSync(process.env.TEMP + '/edge_par_');
   const proc = spawn(edge, [
+    '--remote-allow-origins=*',
     '--headless=new', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1600,2400',
     '--allow-file-access-from-files',
@@ -77,6 +78,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
       return false;
     }
     try {
+      const fb0 = findBtn('File'); if (fb0) fb0.click();
+      await sleep(300);
       const adv = findBtn('Advanced settings'); if (adv) adv.click();
       await sleep(300);
       // 编码器 → 彩色
@@ -94,14 +97,32 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
       await sleep(300);
       // 等文件名
       const t3 = Date.now();
-      while (Date.now() - t3 < 10000) {
-        let fn = '';
+      let fn = '';
+      while (Date.now() - t3 < 15000) {
+        fn = '';
         for (const el of document.querySelectorAll('span')) { const t = el.textContent || ''; if (/rand_30k/.test(t)) fn = t; }
         if (fn) break;
         await sleep(200);
       }
-      findBtn('Start Live QR').click();
+      log.push('file: ' + (fn || 'MISSING'));
+      const sb = findBtn('Start Live QR');
+      if (!sb) return { ok:false, log:'no start button' };
+      sb.click();
       log.push('started');
+      // 细粒度轮询：编码状态 + 画布绘制情况
+      {
+        const tP = Date.now();
+        while (Date.now() - tP < 25000) {
+          await sleep(1000);
+          let st = '';
+          for (const el of document.querySelectorAll('div,span')) { const t = el.textContent || ''; if (/Encoding|Encoded|Live QR running|Rendering/.test(t) && t.length < 140) { st = t.trim(); break; } }
+          const cv2 = document.querySelector('canvas.qr-live-canvas');
+          let painted = -1;
+          if (cv2) { try { const d = cv2.getContext('2d').getImageData(0,0,cv2.width,cv2.height).data; painted = 0; for (let i=3;i<d.length;i+=9973) if (d[i]>0) painted++; } catch(e){} }
+          log.push('t+' + ((Date.now()-tP)/1000).toFixed(0) + 's st=' + (st || '-') + ' canvas=' + (cv2 ? cv2.width+'x'+cv2.height + ' painted=' + painted : 'none'));
+          if (cv2 && painted > 100) break;
+        }
+      }
       // 等画布
       let cv = null;
       const t1 = Date.now();
@@ -110,7 +131,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
         cv = document.querySelector('canvas.qr-live-canvas');
         if (cv) { const c = cv.getContext('2d'); const d = c.getImageData(0,0,cv.width,cv.height).data; let pn=0; for (let i=3;i<d.length;i+=9973) if (d[i]>0) pn++; if (pn < 100) cv = null; }
       }
-      if (!cv) return { ok:false, log:'no canvas' };
+      if (!cv) return { ok:false, log, why:'no canvas' };
       log.push('canvas: ' + cv.width + 'x' + cv.height);
       // 捕获不同帧
       const fp = (c) => {
@@ -133,14 +154,14 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
       return { ok: frames.length > 1, log, frames, status, expectedSize: 30000 };
     } catch (e) { return { ok:false, log: 'ERR ' + e.message, frames: [] }; }
   })()`, true);
-  console.log('ok:', result.ok, '| frames:', (result.frames || []).length);
-  console.log('log:', result.log.join(' | '));
+  console.log('RAW:', JSON.stringify(result).slice(0, 1000));
+  
   console.log('status:', result.status);
   if (result.frames && result.frames.length > 1) {
     fs.writeFileSync('cdp_parallel.json', JSON.stringify({ frames: result.frames, expectedSize: result.expectedSize }));
     console.log('saved cdp_parallel.json');
   }
   ws.close();
-  proc.kill();
+  require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
   process.exit(0);
 })().catch(e => { console.error('FATAL:', e.message); process.exit(1); });

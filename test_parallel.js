@@ -33,6 +33,13 @@ const T = require('./test_tolerance.js');
   });
   if (!done) { console.log('✗ 未解出（unique=' + totalUnique + '）'); process.exit(1); }
   const data = Buffer.from(done.data);
+  let d = -1;
+  for (let i = 0; i < Math.min(data.length, expected.length); i++) if (data[i] !== expected[i]) { d = i; break; }
+  console.log('首个差异 @', d, '/', expected.length);
+  if (d >= 0) {
+    console.log('期望:', [...expected.subarray(d, d + 16)].join(','));
+    console.log('实际:', [...data.subarray(d, d + 16)].join(','));
+  }
   const ok = data.equals(expected);
   console.log('\nCOMPLETE: filename=' + done.filename + ' size=' + data.length + ' 期望=' + expected.length);
   console.log(ok ? '*** 并行=4 彩色传输 PASS：2 帧（8 符号）→ 30000 字节逐字节还原 ***' : '✗ 内容不符');
