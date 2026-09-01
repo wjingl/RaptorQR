@@ -111,7 +111,7 @@ s1 = patchWorker(s1, 'decode', (code) => {
 let s2 = script2;
 
 // 2a0. 彩色符号尺寸（像素）模块变量：Standard 1088 / HD 2176，UI 下拉可调，Start 时生效
-s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,CIM_CS=[[112,1024,7241],[104,952,6116],[96,880,5241],[80,736,3491],[64,592,2116],[56,520,1616],[48,448,1116],[40,376,616],[32,304,366],[28,268,241],[24,232,116]];' +
+s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize=false,CIM_CS=[[112,1024,7241],[104,952,6116],[96,880,5241],[80,736,3491],[64,592,2116],[56,520,1616],[48,448,1116],[40,376,616],[32,304,366],[28,268,241],[24,232,116]];' +
      'function _cix(o){return o<=10?10:o<=15?9:o<=20?8:o<=25?6:o<=30?4:o<=35?2:0}' + s2;
 
 // 2a. 编码器列表
@@ -217,6 +217,20 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,CIM_CS=[[112,1
     if (!s2.includes(oldOpt)) throw new Error('QR size option not found');
     s2 = s2.replace(oldOpt,
       'children:Ft.map(l=>{const g=st(l,b,k);return r("option",{value:l,children:k==="color-cimbar"?["Cim ",g.grid,"×",g.grid," · ",g.maxPayloadSize," B/frame"]:["V",l," · ",g.maxPayloadSize," B/frame"]},l)})');
+  }
+  // 版本下拉手动选择后，自动版本不再覆盖（QR 式：默认按数据量自动选最小网格）
+  {
+    const oldOn = 'onChange:l=>zt(l.target.value),children:Ft.map';
+    if (!s2.includes(oldOn)) throw new Error('version select onChange not found');
+    s2 = s2.split(oldOn).join('onChange:l=>{userPickedSize=true;zt(l.target.value)},children:Ft.map');
+  }
+  // 自动版本（QR 式）：编码前按数据量（压缩后 ×1.2 + 开销）选最小网格——
+  // 符号始终充满信息格，无绿色填充/大片空白；手动选档后跳过
+  {
+    const oldEn = 'const E=g.byteLength>64,z=st(c,b,k);';
+    if (!s2.includes(oldEn)) throw new Error('encode anchor not found');
+    s2 = s2.replace(oldEn,
+      'const E=g.byteLength>64;var _chosen=null;if(k==="color-cimbar"&&!userPickedSize){try{var _comp=g.byteLength;if(E&&typeof CompressionStream!=="undefined"){var _arr=await new Response(new Blob([g]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer();_comp=_arr.byteLength}var _need=Math.ceil(_comp*1.2)+32;for(var _vi=0;_vi<Ft.length;_vi++){var _vv=Ft[_vi];if(st(_vv,b,k).maxPayloadSize>=_need){_chosen=_vv;zt(_vv);break}}}catch(e3){}}var z=_chosen?st(_chosen,b,k):st(c,b,k);');
   }
   const globals = [
     [':"Start Live QR"', ':"Start Live QR (开始实时二维码)"'],
