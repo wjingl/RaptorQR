@@ -125,6 +125,19 @@ RaptorQ 解码 + 解压 → 文本 31499 字符与发送内容**逐字节一致*
 验证：并行=4 时画布 2176×2176、每帧显示 4 个彩色符号，接收端每帧解出其全部符号，
 30KB 文件 6 包（4+2 两帧）端到端逐字节还原（`cdp_parallel.js` + `test_parallel.js`）。
 
+## 播放循环定案（8272e69，用户实测手机收不到后定稿）
+并行网格会把符号缩小为半屏瓦片、下半屏大片空白，且包数 ≤ parallelCount 时
+`displayFrameCount=1` 画面不循环——手机相机拍屏难以接收。最终定案（AGENTS.md 规则）：
+**彩色模式强制 parallelCount=1**（`build_color.js` 2e3 补丁）——整屏单符号、按包循环、
+每帧 250ms 切换。并行网格方案废弃（`cdp_parallel.js` 仅存档）。
+
+## 相机白平衡色相校正（8272e69）
+真实相机 AWB（偏暖/偏冷）会平移色相且各颜色方向不同（如偏暖时青 -12°、品红 +12°），
+单一全局偏移无法校正，导致 4 色分类越界（15% 单元读错 → RS 失败 0 包）。
+修复：`cimqr_codec.js` 逐颜色估计色相偏移（4 期望色相 ±28° 窗口色度加权质心），
+分类改”距 4 个校正中心最小距离”（`hueClassify`）。验证见 `test/camera_sim.js` 与
+`test/ui_camera_e2e.js`（真实退化帧 → 假摄像头 → 接收端 UI 逐字节还原）。
+
 ## 目录结构
 ```
 RaptorQR_彩色版.html / RaptorQR_离线单文件版.html   交付物（彩色版 / 黑白基线构建源）
@@ -147,10 +160,13 @@ node --experimental-vm-modules test/test_browser_e2e.js     # 捕获帧 -> 出�
 node test/cdp_multipacket.js && node --experimental-vm-modules test/test_multipacket.js  # 多包链路
 node test/cdp_parallel.js  && node --experimental-vm-modules test/test_parallel.js      # 并行=4 链路
 node test/perf_test.js     # 性能与吞吐
+node --experimental-vm-modules test/camera_sim.js   # 真实相机退化梯度（11 组合，8/11 通过）
+node test/ui_camera_e2e.js  # 退化帧→假摄像头→接收端 UI 逐字节还原
 ```
 
 ## 已知边界
 - 推荐相机有效倍率 ≥0.6（符号占画面一半以上）；更低倍率下软判决层仍可工作但成功率下降。
-- 重度失焦/运动模糊（>2px）会抹除模板 1px 细笔画——这是当前格径（9px 间距）下的信息极限，属边界可用。
+- 重度失焦/运动模糊（σ2+噪声±30）与透视 4% 会抹除模板细节/使寻像位移超模块——边界可用（ 记录）。
+- 白平衡色相偏移已自动校正（±26° 内逐颜色恢复）；手机相机拍屏的屏幕反光（灰底抬升）不影响解码。
 - 30° 以上旋转：寻像行扫描未针对大角度验证（<10° 均实测通过）。
 - 黑白模式解码前会先做一次廉价的"是否含饱和色"预检，命中才跑彩色解码，黑白帧开销很小。
