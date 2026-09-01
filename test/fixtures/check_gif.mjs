@@ -40,7 +40,7 @@
   // idx 0 = 112×112（格式字节 0x01，向后兼容）；idx 7 = 40×40（最易采集）。
   // 数据格 = g² - 4·9² - 2·(g-18)；流字节 = ⌈格·6/8⌉；RS 块 = ⌊流/155⌋；负载 = 块·125-9
   var SIZES = (function () {
-    var grids = [112, 104, 96, 80, 64, 56, 48, 40], out = [], i, g;
+    var grids = [112, 104, 96, 80, 64, 56, 48, 40, 32, 28, 24], out = [], i, g;
     for (i = 0; i < grids.length; i++) {
       g = grids[i];
       var cells = g * g - 4 * 81 - 2 * (g - 18);
@@ -442,6 +442,10 @@
       var gridIdx = gpos[gperm[i]];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
       var v = cellVals[i];
+      // 零值格画黑：小负载时 RS 补齐/填充占大面积，画成绿+图案0 会形成
+      // "一大片静止绿"（不承载信息、徒增采样混淆）；解码端黑格按失败→0 读，
+      // RS 流语义不变（真数据里的 0 值格同样安全）
+      if (v === 0) continue;
       var tile = tileCache[v >> SYMBOL_BITS][v & 15];
       var x0 = M + Math.floor((OFFSET + cc * PITCH) * R), y0 = M + Math.floor((OFFSET + cr * PITCH) * R);
       var gsx = OFFSET + cc * PITCH, gsy = OFFSET + cr * PITCH;
@@ -651,7 +655,7 @@
             var d = dot(t, u, v);
             var legRatio = Math.abs(d1 - d2) / Math.max(d1, d2);
             var mRatio = Math.abs(t.module - u.module) / Math.max(t.module, u.module) + Math.abs(t.module - v.module) / Math.max(t.module, v.module);
-            var modRatioOK = d1 / t.module > 24 && d1 / t.module < 220;
+            var modRatioOK = d1 / t.module > 16 && d1 / t.module < 220; // 下界 16：24×24 最小档 ratio≈21
             if (Math.abs(d) > 0.2 || legRatio > 0.25 || mRatio > 0.3 || !modRatioOK) continue;
             var sc = Math.abs(d) + legRatio * 2 + mRatio;
             if (sc < ps) { ps = sc; bp = [t, u, v]; }

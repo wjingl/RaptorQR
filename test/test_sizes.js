@@ -12,8 +12,8 @@ function ok(cond, name) {
 }
 
 // 期望容量表（与 build_color.js 内嵌表一致）
-const EXPECT = [[112, 7241], [104, 6116], [96, 5241], [80, 3491], [64, 2116], [56, 1616], [48, 1116], [40, 616]];
-ok(CimQR.SIZES.length === 8, '8 档尺寸');
+const EXPECT = [[112, 7241], [104, 6116], [96, 5241], [80, 3491], [64, 2116], [56, 1616], [48, 1116], [40, 616], [32, 366], [28, 241], [24, 116]];
+ok(CimQR.SIZES.length === 11, '11 档尺寸');
 let tableOK = true;
 for (let i = 0; i < 8; i++) {
   if (CimQR.SIZES[i].grid !== EXPECT[i][0] || CimQR.SIZES[i].packet !== EXPECT[i][1]) tableOK = false;
@@ -35,13 +35,14 @@ ok(geoOK, '每档几何参数自洽');
 // 每档回路：Standard(1088)/HD(2176) 全档 + Compact(544) 已知通过项
 // （40/48 网格 @Compact 544 → 286/333px 极端帧不在支持范围）
 const RT = [];
-for (let idx = 0; idx < 8; idx++) {
+for (let idx = 0; idx < CimQR.SIZES.length; idx++) {
   RT.push([idx, 1088 / CimQR.SIZES[idx].total]);
   RT.push([idx, 2176 / CimQR.SIZES[idx].total]);
 }
-// Compact 544 支持档：112×112（0.5×，历史兼容）+ 64/56/48/40 网格
-// （格点 0.83-1.24px，相位感知模板可读）；104/96/80 网格格点 <0.7px 亚像素不可读
-RT.push([0, 0.5], [4, 544 / 656], [5, 544 / 584], [6, 544 / 512], [7, 544 / 440]);
+// Compact 544 支持档：112×112（0.5×，历史兼容）+ 64/56/48/40/32/28/24 网格
+// （粗网格格点随档放大，更易采集）；104/96/80 网格格点 <0.7px 亚像素不可读
+RT.push([0, 0.5], [4, 544 / 656], [5, 544 / 584], [6, 544 / 512], [7, 544 / 440],
+        [8, 544 / 368], [9, 544 / 332], [10, 544 / 296]);
 for (const [idx, scale] of RT) {
   const SZ = CimQR.SIZES[idx];
   const pkt = new Uint8Array(SZ.packet - 3);
@@ -139,6 +140,22 @@ function boxBlur(img, r) {
      Buffer.compare(Buffer.from(o2[0]), Buffer.from(p2)) === 0 &&
      Buffer.compare(Buffer.from(o3[0]), Buffer.from(p2)) === 0 &&
      Buffer.compare(Buffer.from(o4[0]), Buffer.from(p1)) === 0, '档位切换 40→40→112→40 全部命中');
+}
+
+// 零值格画黑：小负载帧不出现"大片静止绿填充"（数据格占比显著）
+{
+  const pkt = new Uint8Array(600).map(() => (Math.random() * 256) | 0);
+  const r = CimQR.render(pkt, 1, 0);
+  const d = r.data, w = r.width;
+  let green = 0, colored = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const R = d[i], G = d[i + 1], B = d[i + 2];
+    if (G > 100 && R < 60 && B < 60) green++;
+    else if ((G > 100 || R > 100 || B > 100) && (R + G + B) > 100 && !(R > 200 && G > 200 && B > 200)) colored++;
+  }
+  ok(green / (green + colored) < 0.35, '小负载帧绿填充占比 <35%（修复前 ~49%）→ 实际 ' + (green * 100 / (green + colored)).toFixed(0) + '%');
+  const out = CimQR.decode(r.data, r.width, r.height);
+  ok(out.length === 1 && Buffer.compare(Buffer.from(out[0]), Buffer.from(pkt)) === 0, '零值格画黑后解码正确');
 }
 
 // 兼容性：旧帧（TL 角全白 → 标记码全 0 → 档位 0 = 112）
