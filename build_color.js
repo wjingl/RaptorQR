@@ -144,6 +144,12 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize
 }
 // 2d2. （已删除：parallelCount/displayFrameCount 原逻辑即正确——R=Po(o) 网格下各瓦片位置不重叠，
 //      彩色多路并发由 2d 的大瓦片 + 原逻辑天然支持；单包冻结问题根源是 R 被强制 1 而 parallelCount 仍为 o）
+// 2e3. 彩色模式强制并行=1：xo() 调用处把 parallelCount 参数替换（displayFrameCount=ceil(包数/1)=包数，循环恢复）
+{
+  const old = 'const W=xo(M.packets,z,k,ye,';
+  if (!s2.includes(old)) throw new Error('xo call not found');
+  s2 = s2.replace(old, 'const W=xo(M.packets,z,k,k==="color-cimbar"?1:ye,');
+}
 // 2e. 接收端采集分辨率 640 → 1024（彩色符号需要更高分辨率）
 {
   const old = 'E=h.videoHeight||640,z=640,L=x/E;';

@@ -8,3 +8,4 @@ node_modules/
 send_manager/
 .zcode/
 AGENTS.md
+test/fixtures/camera_sim_frames.json

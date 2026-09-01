@@ -909,6 +909,54 @@
     return bits;
   }
 
+  // 全局色相偏移（白平衡校正，decodeFrame 每帧估计一次）
+  // 4 色各自的白平衡色相偏移（与 hueTable 的 colorIdx 对齐：0绿 1青 2黄 3品红）。
+  // 真实相机 AWB 是乘性通道增益，各颜色色相偏移方向和幅度不同（如偏暖时青 -12°、品红 +12°），
+  // 单一全局偏移无法同时校正；逐颜色估计后分类时取"到 4 个校正中心的最小距离"。
+  var HUE_EXPECTED = [120, 180, 60, 300];
+  var hueOffsets = [0, 0, 0, 0];
+  function estimateHueOffsets(rgba, w, h) {
+    var step = Math.max(4, Math.floor(Math.max(w, h) / 160));
+    var stride = w * 4;
+    var offs = [0, 0, 0, 0];
+    for (var e = 0; e < 4; e++) {
+      var sumW = 0, sumH = 0;
+      var lo = HUE_EXPECTED[e] - 28, hi = HUE_EXPECTED[e] + 28;
+      for (var y = 0; y < h; y += step) {
+        for (var x = 0; x < w; x += step) {
+          var o = y * stride + x * 4;
+          var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+          var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+          var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+          var ch = mx - mn;
+          if (ch < 40 || mx < 50) continue;
+          var hue;
+          if (mx === r) hue = ((g - b) / ch) * 60;
+          else if (mx === g) hue = 120 + ((b - r) / ch) * 60;
+          else hue = 240 + ((r - g) / ch) * 60;
+          if (hue < 0) hue += 360;
+          if (hue >= lo && hue <= hi) { sumW += ch; sumH += ch * hue; }
+        }
+      }
+      if (sumW > 0) {
+        var d = sumH / sumW - HUE_EXPECTED[e];
+        if (d > 26) d = 26; else if (d < -26) d = -26;
+        offs[e] = d;
+      }
+    }
+    return offs;
+  }
+  // 分类：hue → 距 4 个校正中心（期望+各自偏移）最近的颜色；超过 maxDev 判为无色
+  function hueClassify(hue, maxDev) {
+    var best = -1, bestD = 1e9;
+    for (var e = 0; e < 4; e++) {
+      var dc = Math.abs(hue - (HUE_EXPECTED[e] + hueOffsets[e]));
+      if (dc > 180) dc = 360 - dc;
+      if (dc < bestD) { bestD = dc; best = e; }
+    }
+    return bestD <= maxDev ? best : -1;
+  }
+
   // 单次解码尝试：detTarget=检测用降采样目标边长，INNER=格内采样跨度（越小越抗模糊/混色），
   // soft=软判决匹配，useMarker=用 BR 对齐标记作第 4 角点（否则平行四边形估计）
   function decodeAttempt(rgba, w, h, detTarget, INNER, soft, useMarker, rMode) {
@@ -1187,8 +1235,7 @@
           if (mx2 === r2) hue2 = ((g2 - b2) / ch2) * 60;
           else if (mx2 === g2) hue2 = 120 + ((b2 - r2) / ch2) * 60;
           else hue2 = 240 + ((r2 - g2) / ch2) * 60;
-          if (hue2 < 0) hue2 += 360;
-          var ci2 = hueTable[Math.round(hue2) % 360];
+          var ci2 = hueClassify(hue2, 12);
           if (ci2 >= 0) colVotes[ci2] += sC[q];
         }
         for (var cl2 = 1; cl2 < 4; cl2++) if (colVotes[cl2] > colVotes[cmax]) cmax = cl2;
@@ -1217,7 +1264,7 @@
           else if (mx === g) hue = 120 + ((b - r) / chroma) * 60;
           else hue = 240 + ((r - g) / chroma) * 60;
           if (hue < 0) hue += 360;
-          var cIdx = hueTable[Math.round(hue) % 360];
+          var cIdx = hueClassify(hue, 12);
           if (cIdx >= 0) { colVotes[cIdx]++; cnt++; bit = 1; }
         }
         patHi = (patHi << 1) | ((patLo >>> 31) & 1);
@@ -1407,7 +1454,7 @@
           else if (mx2 === g2) hue2 = 120 + ((b2 - r2) / ch2) * 60;
           else hue2 = 240 + ((r2 - g2) / ch2) * 60;
           if (hue2 < 0) hue2 += 360;
-          var ci2 = hueTable[Math.round(hue2) % 360];
+          var ci2 = hueClassify(hue2, 12);
           if (ci2 >= 0) colVotes[ci2] += sC[q];
         }
         for (var cl2 = 1; cl2 < 4; cl2++) if (colVotes[cl2] > colVotes[cmax]) cmax = cl2;
@@ -1433,7 +1480,7 @@
           else if (mx === g) hue = 120 + ((b - r) / chroma) * 60;
           else hue = 240 + ((r - g) / chroma) * 60;
           if (hue < 0) hue += 360;
-          var cIdx = hueTable[Math.round(hue) % 360];
+          var cIdx = hueClassify(hue, 12);
           if (cIdx >= 0) { colVotes[cIdx]++; cnt++; bit = 1; }
         }
         patHi = (patHi << 1) | ((patLo >>> 31) & 1);
@@ -1514,6 +1561,8 @@
   ];
   function decodeFrame(rgba, w, h) {
     detToken++;
+    // 白平衡色相校正（真实相机 AWB 偏暖/偏冷会平移色相；黑白 QR 帧不会走到这里）
+    hueOffsets = estimateHueOffsets(rgba, w, h);
     // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
     if (_lastH) {
       var fast;
@@ -1552,6 +1601,7 @@
     render: renderFrame,
     decode: decodeFrame, _decodeAttempt: decodeAttempt,
     readSizeMark: readSizeMark,
+    _hueOffset: function(){ return hueOffset; },
     rsEncode: rsEncode, rsDecode: rsDecode,
     _perm: perm, _cellPos: cellPos,
     _detect: function (rgba, w, h) {
