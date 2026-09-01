@@ -230,7 +230,29 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize
     const oldEn = 'const E=g.byteLength>64,z=st(c,b,k);';
     if (!s2.includes(oldEn)) throw new Error('encode anchor not found');
     s2 = s2.replace(oldEn,
-      'const E=g.byteLength>64;var _chosen=null;if(k==="color-cimbar"&&!userPickedSize){try{var _comp=g.byteLength;if(E&&typeof CompressionStream!=="undefined"){var _arr=await new Response(new Blob([g]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer();_comp=_arr.byteLength}var _need=Math.ceil(_comp*1.2)+32;for(var _vi=0;_vi<Ft.length;_vi++){var _vv=Ft[_vi];if(st(_vv,b,k).maxPayloadSize>=_need){_chosen=_vv;zt(_vv);break}}}catch(e3){}}var z=_chosen?st(_chosen,b,k):st(c,b,k);');
+      'const E=g.byteLength>64;var _chosen=null;if(k==="color-cimbar"&&!userPickedSize){try{var _comp=g.byteLength;if(E&&typeof CompressionStream!=="undefined"){var _arr=await new Response(new Blob([g]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer();_comp=_arr.byteLength}var _need=Math.ceil(_comp*1.2)+32;for(var _vi=0;_vi<Ft.length;_vi++){var _vv=Ft[_vi];if(st(_vv,b,k).maxPayloadSize>=_need){_chosen=_vv;break}}}catch(e3){}}var z=_chosen?st(_chosen,b,k):st(c,b,k);');
+  }
+  // 渲染池 render：cimSize 必须随消息下发（审计发现：缺此字段时彩色渲染永远用
+  // 默认 112×112——版本/容量改了、网格没动，正是用户看到的现象）
+  {
+    const oldSig = 'render(t,n,o,a,i){';
+    if (!s2.includes(oldSig)) throw new Error('render pool sig not found');
+    s2 = s2.replace('render(t,n,o,a,i){', 'render(t,n,o,a,i,c){');
+    const oldMsg = 'qrEncoder:i,jobId:d}';
+    if (!s2.includes(oldMsg)) throw new Error('render msg not found');
+    s2 = s2.split(oldMsg).join('qrEncoder:i,cimSize:c,jobId:d}');
+  }
+  // 实时渲染调用：把配置的 cimSize 传进渲染池
+  {
+    const oldCall = 'x.render(lt,l.version,l.eccLevel,l.scale,l.qrEncoder)';
+    if (!s2.includes(oldCall)) throw new Error('live render call not found');
+    s2 = s2.split(oldCall).join('x.render(lt,l.version,l.eccLevel,l.scale,l.qrEncoder,l.cimSize)');
+  }
+  // 自动版本 UI 同步：编码完成后更新版本显示（编码/渲染已用自动档位，此处仅刷新下拉）
+  {
+    const oldWe = 'if(l!==le.current)return;We({originalSize:';
+    if (!s2.includes(oldWe)) throw new Error('We anchor not found');
+    s2 = s2.split(oldWe).join('if(l!==le.current)return;_chosen&&zt(_chosen);We({originalSize:');
   }
   const globals = [
     [':"Start Live QR"', ':"Start Live QR (开始实时二维码)"'],

@@ -442,10 +442,6 @@
       var gridIdx = gpos[gperm[i]];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
       var v = cellVals[i];
-      // 零值格画黑：小负载时 RS 补齐/填充占大面积，画成绿+图案0 会形成
-      // "一大片静止绿"（不承载信息、徒增采样混淆）；解码端黑格按失败→0 读，
-      // RS 流语义不变（真数据里的 0 值格同样安全）
-      if (v === 0) continue;
       var tile = tileCache[v >> SYMBOL_BITS][v & 15];
       var x0 = M + Math.floor((OFFSET + cc * PITCH) * R), y0 = M + Math.floor((OFFSET + cr * PITCH) * R);
       var gsx = OFFSET + cc * PITCH, gsy = OFFSET + cr * PITCH;

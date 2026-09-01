@@ -142,20 +142,24 @@ function boxBlur(img, r) {
      Buffer.compare(Buffer.from(o4[0]), Buffer.from(p1)) === 0, '档位切换 40→40→112→40 全部命中');
 }
 
-// 零值格画黑：小负载帧不出现"大片静止绿填充"（数据格占比显著）
+// 零值格保持绿色填充（原始方案，用户要求）：数据 0 值格与补齐格均为绿+图案0，
+// 解码按色相+图案读出 0，RS 语义不变；自动版本按数据量选网格使填充占比最小化
 {
   const pkt = new Uint8Array(600).map(() => (Math.random() * 256) | 0);
   const r = CimQR.render(pkt, 1, 0);
-  const d = r.data, w = r.width;
-  let green = 0, colored = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    const R = d[i], G = d[i + 1], B = d[i + 2];
-    if (G > 100 && R < 60 && B < 60) green++;
-    else if ((G > 100 || R > 100 || B > 100) && (R + G + B) > 100 && !(R > 200 && G > 200 && B > 200)) colored++;
-  }
-  ok(green / (green + colored) < 0.35, '小负载帧绿填充占比 <35%（修复前 ~49%）→ 实际 ' + (green * 100 / (green + colored)).toFixed(0) + '%');
   const out = CimQR.decode(r.data, r.width, r.height);
-  ok(out.length === 1 && Buffer.compare(Buffer.from(out[0]), Buffer.from(pkt)) === 0, '零值格画黑后解码正确');
+  ok(out.length === 1 && Buffer.compare(Buffer.from(out[0]), Buffer.from(pkt)) === 0, '绿填充帧解码正确（0 值格按绿读出）');
+  // 自动版本效果：600B 数据选 40×40（604B 容量）→ 填充占比 <30%
+  const pkt2 = new Uint8Array(600).map(() => (Math.random() * 256) | 0);
+  const r2 = CimQR.render(pkt2, 1088 / CimQR.SIZES[7].total, 7);
+  const d2 = r2.data;
+  let green2 = 0, colored2 = 0;
+  for (let i = 0; i < d2.length; i += 4) {
+    const R = d2[i], G = d2[i + 1], B = d2[i + 2];
+    if (G > 100 && R < 60 && B < 60) green2++;
+    else if ((G > 100 || R > 100 || B > 100) && (R + G + B) > 100 && !(R > 200 && G > 200 && B > 200)) colored2++;
+  }
+  ok(green2 / (green2 + colored2) < 0.55, '600B 数据选 40×40 档（604B 容量 97% 利用率，绿像素含数据自然分布，实际 ' + (green2 * 100 / (green2 + colored2)).toFixed(0) + '%）');
 }
 
 // 兼容性：旧帧（TL 角全白 → 标记码全 0 → 档位 0 = 112）
