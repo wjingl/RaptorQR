@@ -19,7 +19,8 @@ const moduleTagStart = html.indexOf('<script type="module">');
 const s2Start = moduleTagStart + '<script type="module">'.length;
 const s2End = html.indexOf('</script>', s2Start);
 if (script1TagStart < 0 || moduleTagStart < 0) throw new Error('script boundaries not found');
-const head = html.slice(0, script1TagStart);
+// 剥离静态 boot-shell：React 18 createRoot 不清空容器，壳会残留在应用下方显示 "Preparing runtime assets…"
+const head = html.slice(0, script1TagStart).replace(/<main class="boot-shell">[\s\S]*?<\/main>/, '');
 const script1 = html.slice(s1Start, s1End);
 const between = html.slice(s1End + '</script>'.length, moduleTagStart);
 const script2 = html.slice(s2Start, s2End);
