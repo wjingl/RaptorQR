@@ -494,7 +494,7 @@ if (require.main === module) (async () => {
     const unique = prog.uniquePackets ?? 0, needed = prog.neededPackets ?? 0;
     const failureStage = ok ? 'complete' : (unique > 0 ? 'fec-collecting' : (lastCode?.info?.stage || st.stage));
     const codeInfo = lastCode?.info || st.info || {};
-    results.push({ id, name, class: combo.class, acceptance: combo.acceptance, seed, note: s0.note, ok, stage: failureStage, codeType: lastCode?.color ? 'color-cimbar' : (codeInfo.format === 'qr-standard' ? 'qr-standard' : 'unknown'), maybeColor: st.maybeColor, finders: st.finders, selected: st.selected, packets: st.packets, grid: codeInfo.grid || null, symbolSize: codeInfo.symbolSize || null, informationDensity: codeInfo.informationDensity || null, timingScore: codeInfo.timingScore ?? null, info: codeInfo, framesWithQR: prog.framesWithQR ?? 0, unique, accepted: prog.acceptedPackets ?? 0, needed });
+    results.push({ id, name, class: combo.class, acceptance: combo.acceptance, seed, note: s0.note, ok, stage: failureStage, codeType: lastCode?.color ? 'color-cimbar' : (codeInfo.format === 'qr-standard' ? 'qr-standard' : 'unknown'), maybeColor: st.maybeColor, finders: codeInfo.finderCount ?? st.finders, selected: codeInfo.selectedAnchors ?? st.selected, packets: st.packets, grid: codeInfo.grid || null, symbolSize: codeInfo.symbolSize || null, informationDensity: codeInfo.informationDensity || null, timingScore: codeInfo.timingScore ?? null, info: codeInfo, framesWithQR: prog.framesWithQR ?? 0, unique, accepted: prog.acceptedPackets ?? 0, needed });
     log('[' + (ok ? 'PASS' : 'FAIL') + '] ' + id + ' ' + name + ' — ' + s0.note + ' | type=' + (lastCode?.color ? 'color-cimbar' : 'qr-standard/unknown') + ' stage=' + failureStage + ' grid=' + (codeInfo.grid || '?') + 'px=' + (codeInfo.symbolSize || '?') + ' B/码=' + (codeInfo.informationDensity || '?') + ' timing=' + (codeInfo.timingScore ?? '?') + ' anchors=' + (codeInfo.finderCount ?? st.finders) + ' symbols=' + (codeInfo.symbolsPerFrame ?? codeInfo.symbols ?? 0) + ' unique=' + unique + '/' + (needed || '?') + ' ' + ms + 'ms');
   }
 
@@ -502,7 +502,7 @@ if (require.main === module) (async () => {
   for (const r of results) log(JSON.stringify(r));
   const pass = results.filter(r => r.ok).length;
   log('现实基线通过 ' + pass + '/' + results.length);
-  for (const r of results) log('阶段 ' + r.id + ': ' + r.stage + ' | anchors=' + r.finders + ' | packets=' + r.packets + ' | unique=' + r.unique + '/' + (r.needed || '?'));
+  for (const r of results) log('阶段 ' + r.id + ': ' + r.stage + ' | anchors=' + r.finders + ' | symbols=' + r.selected + ' | packets=' + r.packets + ' | unique=' + r.unique + '/' + (r.needed || '?'));
   // synthetic-camera 现实基线必须全通过；压力边界由 camera_stress.js 单独验收。
   process.exitCode = pass === results.length ? 0 : 2;
 })().catch(e => { log('FATAL: ' + (e && e.stack ? e.stack : e)); process.exitCode = 1; });
