@@ -4,10 +4,13 @@
  * 最终生成彩色化单文件 HTML。
  * ========================================================================== */
 const fs = require('fs');
+const path = require('path');
 
-const SRC = 'RaptorQR_离线单文件版.html';
-const DST = 'RaptorQR_彩色版.html';
-const CODEC = fs.readFileSync('cimqr_codec.js', 'utf8');
+const ROOT = __dirname;
+const SRC = path.join(ROOT, 'RaptorQR_离线单文件版.html');
+const DST = path.join(ROOT, 'RaptorQR_彩色版.html');
+const CODEC_PATH = path.join(ROOT, 'cimqr_codec.js');
+const CODEC = fs.readFileSync(CODEC_PATH, 'utf8');
 
 const html = fs.readFileSync(SRC, 'utf8');
 
@@ -42,7 +45,9 @@ function patchWorker(source, name, patchFn) {
 
 // 注入编解码器源码（UMD 包装在 worker 中会挂到 self.CimQR）
 function injectCodec(code) {
-  if (code.includes('CimQR')) return code; // 防重复
+  // 只按 codec 的稳定导出标记防重复；worker 业务代码本身也可能出现 "CimQR" 文本，
+  // 不能用宽泛 includes('CimQR') 跳过注入，否则 source 与出厂 worker 会静默漂移。
+  if (code.includes('CimQR — 彩色 cimbar/QR 混合编解码器')) return code;
   return CODEC + '\n' + code;
 }
 
@@ -92,8 +97,13 @@ s1 = patchWorker(s1, 'decode', (code) => {
   const ys = 'async function ys(r){const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0)return;let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}';
   if (!code.includes(ys)) throw new Error('decode ys not found');
   code = code.replace(ys,
-    'async function ys(r){let cp=[];if(CimQR.maybeColor(r.data,r.width,r.height)){try{cp=CimQR.decode(r.data,r.width,r.height)||[]}catch(e2){cp=[]}}if(cp.length>0){let i=0;for(const by of cp){let s;try{s=Di(by)}catch{continue}if(await ws({version:0},s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b);return}' +
-    'const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0)return;let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}');
+    'async function ys(r){var mc=CimQR.maybeColor(r.data,r.width,r.height),cp=[];' +
+    // maybeColor 仅为快速统计，不再决定是否尝试彩色解析：暗光/失焦/反光会降低色度，
+    // 但结构和图形仍可能可读。彩色 decode 自带 no-anchor/RS/格式裁决，黑白帧无包时快速返回。
+    'try{cp=CimQR.decode(r.data,r.width,r.height)||[]}catch(e2){cp=[]}' +
+    'try{self.postMessage({type:"single-code",info:CimQR.info(),color:cp.length>0||mc})}catch(e3){}' +
+    'if(cp.length>0){let i=0;for(const by of cp){let s;try{s=Di(by)}catch{continue}if(await ws({version:0},s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b);return}' +
+    'const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0){try{self.postMessage({type:"single-code",info:{stage:mc?"color-parse-failed":"unknown",format:mc?"color-cimbar":"unknown",symbols:0},color:mc})}catch(e5){}return}try{self.postMessage({type:"single-code",info:{stage:"qr-standard",format:"qr-standard",symbols:n.length},color:false})}catch(e6){}let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}');
   // 实时帧"保最新"策略：解码处理中到达的实时帧不排队（相机 30fps 永远有新帧），
   // 只保留最新一帧（pendingLatest），处理完立即跟进——消除积压与陈旧画面延迟
   // 帧哈希去重：发送端循环播放时重复帧占大多数（同一符号反复出现），
@@ -167,7 +177,7 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize
   // progress 到达时自适应抓帧间隔
   const old = 'case"progress":{$(l.totalFrames??0);';
   if (!s2.includes(old)) throw new Error('progress case not found');
-  s2 = s2.replace(old, 'case"progress":{if(progLast){var gi=performance.now()-progLast;grabInterval=Math.max(30,Math.min(120,gi*1.3));}progLast=performance.now();$(l.totalFrames??0);');
+  s2 = s2.replace(old, 'case"single-code":{if(l.info){const q=l.info;F(q.format==="qr-standard"?`标准 QR ✓ · ${q.symbols||1} 码/帧`:q.stage==="single-code-ok"?`彩色 CimQR ✓ ${q.grid||"?"}×${q.grid||"?"} · ${q.symbolSize||"?"}px · ${q.informationDensity||"?"} B/码 · ${q.symbols||0} 码/帧`:q.stage==="no-anchor"?"彩色 CimQR：未找到结构锚点（调整距离/反光/对焦）":q.stage==="cell-parse-failed"||q.stage==="color-parse-failed"?`彩色 CimQR：已定位 ${q.grid||"?"}×${q.grid||"?"} 锚点，但单码图形/颜色解析失败`:"正在采样单码结构")}break}case"progress":{if(progLast){var gi=performance.now()-progLast;grabInterval=Math.max(30,Math.min(120,gi*1.3));}progLast=performance.now();$(l.totalFrames??0);');
 }
 // 2e2. 彩色尺寸：xo scale 传倍率（render worker 用）+ gif 调用传 scale + UI 下拉
 {
@@ -308,11 +318,16 @@ function checkWorker(name) {
   const m = s1.match(re);
   if (!m) throw new Error('worker ' + name + ' missing after build');
   const code = Buffer.from(m[1], 'base64').toString('utf8');
-  fs.writeFileSync('test/fixtures/check_' + name + '.mjs', code);
+  if (!code.includes('CimQR — 彩色 cimbar/QR 混合编解码器')) throw new Error('worker ' + name + ' missing injected codec marker');
+  if (name === 'decode') {
+    const required = ['function estimateWBGain', 'function hueNearest', 'var lastInfo'];
+    for (const marker of required) if (!code.includes(marker)) throw new Error('decode worker missing ' + marker);
+  }
+  fs.writeFileSync(path.join(ROOT, 'test', 'fixtures', 'check_' + name + '.mjs'), code);
   console.log('worker', name, 'extracted,', code.length, 'chars');
 }
 checkWorker('qr_render');
 checkWorker('gif');
 checkWorker('decode');
-fs.writeFileSync('test/fixtures/check_bundle.mjs', s2);
+  fs.writeFileSync(path.join(ROOT, 'test', 'fixtures', 'check_bundle.mjs'), s2);
 console.log('bundle extracted,', s2.length, 'chars');

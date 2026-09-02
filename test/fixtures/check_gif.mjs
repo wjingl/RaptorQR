@@ -54,6 +54,19 @@
   // 默认档 = 112（旧常量保持默认值，兼容既有调用）
   var GRID = SIZES[0].grid, IMG = SIZES[0].img, DATA_CELLS = SIZES[0].cells, MAX_PACKET = SIZES[0].packet;
   var FORMAT = 0x01; // 帧头格式字节 = 尺寸索引 + 1
+  // 最近一次单码识别遥测：不参与解码判定，不改变热路径；供接收端区分
+  // "没有结构候选"、"已定位但格解析失败"、"已完成单码还原"。
+  var lastInfo = {
+    schemaVersion: 1, format: 'color-cimbar', codeType: 'color-cimbar', stage: 'idle',
+    candidates: 0, finderCount: 0, selectedAnchors: 0, symbols: 0, symbolsPerFrame: 0,
+    parallelCount: 1, attemptIndex: -1, attemptsTried: 0, source: 'full', markerUsed: false,
+    timingScore: null, grid: null, symbolSize: null, informationDensity: null,
+    samplingPoints: 0, unknownCells: 0, meanChroma: null, localIllumRange: null,
+    wbGain: [1, 1, 1], hueOffsets: [0, 0, 0, 0]
+  };
+  function setInfo(p) {
+    for (var k in p) lastInfo[k] = p[k];
+  }
 
   // 尺寸标记码：TL 角保留区 5 个 8×8 模块（4bit 索引 MSB 在前 + 1bit 偶校验），
   // 位置对所有档位固定（corner 排除区恒 9 格 = 像素 8..88，标记行 y∈[72,80]）
@@ -772,6 +785,20 @@
   // 整数/半倍率下自动退化为旧 floor/奇偶行为（φ=0 时序列即 floor(pxv)）。
   // 检测缓存：同帧同 SCALE 复用 finder 候选（阶梯各层同降采样尺寸时省重复检测/精化）
   var detToken = 0, detCacheKey = '', detCands = [];
+  // 相机标准化帧：结构定位使用 structureLuma，颜色采样使用 rawRGBA + localWB；
+  // 同一帧的所有 ATTEMPT 复用，避免每次重算灰度，也明确划开采集与解析边界。
+  var normalizedFrame = null;
+  function prepareNormalizedFrame(rgba, w, h) {
+    var gray = new Uint8Array(w * h), o = 0;
+    for (var i = 0; i < w * h; i++, o += 4)
+      gray[i] = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
+    normalizedFrame = { rawRGBA: rgba, width: w, height: h, structureLuma: gray, localWB: localWB, qualityMap: null };
+    return normalizedFrame;
+  }
+  function getNormalizedFrame(rgba, w, h) {
+    return normalizedFrame && normalizedFrame.rawRGBA === rgba && normalizedFrame.width === w && normalizedFrame.height === h
+      ? normalizedFrame : prepareNormalizedFrame(rgba, w, h);
+  }
   function phaseOf(x) { return x - Math.floor(x); }
   var phaseCacheMap = {};
   // 图案行位表（NUMBER 运算，热循环免 BigInt）
@@ -913,6 +940,71 @@
   // 4 色各自的白平衡色相偏移（与 hueTable 的 colorIdx 对齐：0绿 1青 2黄 3品红）。
   // 真实相机 AWB 是乘性通道增益，各颜色色相偏移方向和幅度不同（如偏暖时青 -12°、品红 +12°），
   // 单一全局偏移无法同时校正；逐颜色估计后分类时取"到 4 个校正中心的最小距离"。
+  // 相机→标准色彩第一步：从亮、低色度背景估计 RGB 增益，只纠正色偏，不改变曝光。
+  var wbGain = [1, 1, 1];
+  // 局部白点场：低分辨率网格只服务数据区颜色采样，结构定位仍使用原始灰度。
+  // 每个格只查最近场节点，限幅防止反光/噪声被放大；没有足够中性点时退回全局增益。
+  var localWB = null, localWBW = 0, localWBH = 0;
+  function estimateLocalWB(rgba, w, h) {
+    var gw = 16, gh = 16, stride = w * 4;
+    var sum = new Float64Array(gw * gh * 3), cnt = new Uint16Array(gw * gh);
+    var step = Math.max(2, Math.floor(Math.max(w, h) / 320));
+    for (var y = 0; y < h; y += step) for (var x = 0; x < w; x += step) {
+      var o = y * stride + x * 4, r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (mx < 110 || mx - mn > 82) continue;
+      var ix = Math.min(gw - 1, (x * gw / w) | 0), iy = Math.min(gh - 1, (y * gh / h) | 0), q = iy * gw + ix;
+      sum[q * 3] += r; sum[q * 3 + 1] += g; sum[q * 3 + 2] += b; cnt[q]++;
+    }
+    var valid = 0;
+    // 先算全局白点，作为没有局部中性参考 tile 的安全回退。
+    for (var q2 = 0; q2 < cnt.length; q2++) if (cnt[q2]) {
+      var ar = sum[q2 * 3] / cnt[q2], ag = sum[q2 * 3 + 1] / cnt[q2], ab = sum[q2 * 3 + 2] / cnt[q2];
+      var gr = 255 / Math.max(1, ar), gg = 255 / Math.max(1, ag), gb = 255 / Math.max(1, ab);
+      var gm = Math.pow(gr * gg * gb, 1 / 3); gr /= gm; gg /= gm; gb /= gm;
+      sum[q2 * 3] = Math.max(0.72, Math.min(1.4, gr));
+      sum[q2 * 3 + 1] = Math.max(0.72, Math.min(1.4, gg));
+      sum[q2 * 3 + 2] = Math.max(0.72, Math.min(1.4, gb));
+      valid++;
+    }
+    if (valid < 4) { localWB = null; localWBW = gw; localWBH = gh; return valid; }
+    // 填洞：反光/彩色数据区可能没有中性点，不能让未填 tile 的 0 增益污染采样。
+    for (q2 = 0; q2 < cnt.length; q2++) if (!cnt[q2]) {
+      var ix2 = q2 % gw, iy2 = (q2 / gw) | 0, best = -1, bd = 1e9;
+      for (var q3 = 0; q3 < cnt.length; q3++) if (cnt[q3]) {
+        var dx2 = (q3 % gw) - ix2, dy2 = ((q3 / gw) | 0) - iy2, dd = dx2 * dx2 + dy2 * dy2;
+        if (dd < bd) { bd = dd; best = q3; }
+      }
+      if (best >= 0) { sum[q2 * 3] = sum[best * 3]; sum[q2 * 3 + 1] = sum[best * 3 + 1]; sum[q2 * 3 + 2] = sum[best * 3 + 2]; }
+    }
+    localWB = sum; localWBW = gw; localWBH = gh;
+    return valid;
+  }
+  function localGainAt(w, h, x, y) {
+    if (!localWB) return wbGain;
+    var q = Math.min(localWBW - 1, (x * localWBW / w) | 0) + Math.min(localWBH - 1, (y * localWBH / h) | 0) * localWBW;
+    return [localWB[q * 3], localWB[q * 3 + 1], localWB[q * 3 + 2]];
+  }
+  function localColor(rgba, w, h, o) {
+    var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2], p = o >> 2;
+    var gain = localGainAt(w, h, p % w, (p / w) | 0);
+    return [r * gain[0], g * gain[1], b * gain[2]];
+  }
+  function estimateWBGain(rgba, w, h) {
+    var step = Math.max(4, Math.floor(Math.max(w, h) / 160)), stride = w * 4;
+    var n = 0, sr = 0, sg = 0, sb = 0;
+    for (var y = 0; y < h; y += step) for (var x = 0; x < w; x += step) {
+      var o = y * stride + x * 4, r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (mx < 140 || mx - mn > 70) continue;
+      sr += r; sg += g; sb += b; n++;
+    }
+    if (n < 16) { wbGain = [1, 1, 1]; return; }
+    var gr = 255 / (sr / n), gg = 255 / (sg / n), gb = 255 / (sb / n);
+    var gm = Math.pow(gr * gg * gb, 1 / 3);
+    gr /= gm; gg /= gm; gb /= gm;
+    wbGain = (gr > 0.6 && gr < 1.7 && gg > 0.6 && gg < 1.7 && gb > 0.6 && gb < 1.7) ? [gr, gg, gb] : [1, 1, 1];
+  }
   var HUE_EXPECTED = [120, 180, 60, 300];
   var hueOffsets = [0, 0, 0, 0];
   function estimateHueOffsets(rgba, w, h) {
@@ -925,7 +1017,7 @@
       for (var y = 0; y < h; y += step) {
         for (var x = 0; x < w; x += step) {
           var o = y * stride + x * 4;
-          var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+          var r = rgba[o] * wbGain[0], g = rgba[o + 1] * wbGain[1], b = rgba[o + 2] * wbGain[2];
           var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
           var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
           var ch = mx - mn;
@@ -946,6 +1038,16 @@
     }
     return offs;
   }
+  // 无阈值最近中心：仅用于高色度但超容差的软判决降权投票，不直接接受低色度样本。
+  function hueNearest(hue) {
+    var best = 0, bestD = 1e9;
+    for (var e = 0; e < 4; e++) {
+      var dc = Math.abs(hue - (HUE_EXPECTED[e] + hueOffsets[e]));
+      if (dc > 180) dc = 360 - dc;
+      if (dc < bestD) { bestD = dc; best = e; }
+    }
+    return best;
+  }
   // 分类：hue → 距 4 个校正中心（期望+各自偏移）最近的颜色；超过 maxDev 判为无色
   function hueClassify(hue, maxDev) {
     var best = -1, bestD = 1e9;
@@ -957,14 +1059,35 @@
     return bestD <= maxDev ? best : -1;
   }
 
+  // 顶部/左侧时序线质量：不是数据颜色，而是第三类结构锚点。
+  // 当前只做质量评分（不直接拒帧），用于区分“几何已锁定但局部反光”与误检，
+  // 后续可用于多候选排序；黑白和彩色共用这组固定黑白交替点。
+  function timingScore(rgba, w, h, H, IMG2) {
+    var stride = w * 4, total = 0, hit = 0, k;
+    function sample(x, y, darkExpected) {
+      var p = H.map(x, y), xx = Math.round(p[0]), yy = Math.round(p[1]);
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) return;
+      var o = yy * stride + xx * 4;
+      var lum = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
+      var dark = lum < 145;
+      total++; if (dark === darkExpected) hit++;
+    }
+    for (k = 0; 64 + k * 8 < IMG2 - 72; k++) {
+      var d = (k & 1) === 0;
+      sample(64 + k * 8 + 4, 60, d);
+      sample(60, 64 + k * 8 + 4, d);
+    }
+    return total ? hit / total : 0;
+  }
+
   // 单次解码尝试：detTarget=检测用降采样目标边长，INNER=格内采样跨度（越小越抗模糊/混色），
   // soft=软判决匹配，useMarker=用 BR 对齐标记作第 4 角点（否则平行四边形估计）
   function decodeAttempt(rgba, w, h, detTarget, INNER, soft, useMarker, rMode) {
-    // 灰度
-    var gray = new Uint8Array(w * h);
+    // 结构视图与颜色视图分离：Finder/Timing/BR 只使用一次生成的原始灰度，
+    // 数据格颜色采样另走 localWB；所有 ATTEMPT 复用同一 NormalizedFrame。
+    var normalized = getNormalizedFrame(rgba, w, h);
+    var gray = normalized.structureLuma;
     var i, o = 0;
-    for (i = 0; i < w * h; i++, o += 4)
-      gray[i] = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
 
     // 检测降采样目标按帧尺寸自适应：并行网格大画布（如 2176×2176）每符号像素被摊薄，
     // 检测目标随帧边长同比例提升（基准 768 → detTarget，下限 512 上限 2048）
@@ -990,7 +1113,8 @@
     if (detCacheKey !== dk) { detCands = detectFinders(dg, dw, dh); detCacheKey = dk; }
     var cands = detCands;
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'det', cands: cands.slice(0, 12).map(function(c){return {x:+c.x.toFixed(1), y:+c.y.toFixed(1), m:+c.module.toFixed(2), n:c.n};}) });
-    if (cands.length < 3) return [];
+    setInfo({ stage: 'located', candidates: cands.length, finderCount: cands.length, selectedAnchors: 0, symbols: 0, symbolsPerFrame: 0, source: 'full', attemptIndex: -1, grid: null, symbolSize: null, informationDensity: null });
+    if (cands.length < 3) { setInfo({ stage: 'no-anchor' }); return []; }
     // —— 多符号并行：同一帧可含多个 CimQR 符号（网格布局），逐符号解码，解完移除其寻像候选 ——
     var packets = [];
     var MAX_SYMBOLS = 8;
@@ -998,6 +1122,7 @@
     for (var symN = 0; symN < MAX_SYMBOLS; symN++) {
     var sel = selectTriple(cands);
     if (!sel) break;
+    setInfo({ selectedAnchors: 3 });
     var mod = sel.module;
     // 放大回原图坐标
     var tl = { x: sel.tl.x / SCALE, y: sel.tl.y / SCALE };
@@ -1015,6 +1140,7 @@
     var sIdx = sizeFromSpan(spanPx, modFull);
     var SZ = SIZES[sIdx];
     var IMG2 = SZ.img;
+    setInfo({ grid: SZ.grid, symbolSize: SZ.total, informationDensity: SZ.packet, formatByte: sIdx + 1 });
     var symTL = [28, 28], symTR = [IMG2 - 36, 28], symBL = [28, IMG2 - 36], symBR = [IMG2 - 36, IMG2 - 36];
     var imgTL = [tl.x, tl.y], imgTR = [tr.x, tr.y], imgBL = [bl.x, bl.y];
     // BR 用平行四边形估计
@@ -1022,7 +1148,16 @@
     var H = solveHomography([symTL, symTR, symBL, symBR], [imgTL, imgTR, imgBL, imgBR]);
     if (!H) { cands = dropTriple(cands, sel); continue; }
     var sm = readSizeMark(rgba, w, h, H);
-    if (sm !== null) sIdx = sm;
+    if (sm !== null && sm !== sIdx) {
+      // 尺寸标记是独立格式锚点；档位变化后必须重建符号坐标和 H，不能沿用旧档位外推。
+      sIdx = sm;
+      SZ = SIZES[sIdx];
+      IMG2 = SZ.img;
+      symTR = [IMG2 - 36, 28]; symBL = [28, IMG2 - 36]; symBR = [IMG2 - 36, IMG2 - 36];
+      imgBR = [tl.x + (tr.x - tl.x) + (bl.x - tl.x), tl.y + (tr.y - tl.y) + (bl.y - tl.y)];
+      H = solveHomography([symTL, symTR, symBL, symBR], [imgTL, imgTR, imgBL, imgBR]);
+      if (!H) { cands = dropTriple(cands, sel); continue; }
+    }
     SZ = SIZES[sIdx];
     IMG2 = SZ.img;
     // BR 对齐标记精化：检测第 4 角的真实位置（5×5 对齐图案，符号坐标中心 img-52），
@@ -1078,9 +1213,12 @@
         var H2 = solveHomography([symTL, symTR, symBL, [IMG2 - 52, IMG2 - 52]], [imgTL, imgTR, imgBL, markC]);
         if (H2) H = H2;
       }
+      setInfo({ markerUsed: !!markC });
       if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'br', refined: !!markC, mark: markC, pred: p0 });
     } catch (e) {}
-    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'h', SCALE: SCALE, tl: [tl.x, tl.y], tr: [tr.x, tr.y], bl: [bl.x, bl.y], h: H.h, sample0: H.map(71.5, 8.5) });
+    var tScore = timingScore(rgba, w, h, H, IMG2);
+    setInfo({ timingScore: +tScore.toFixed(3), stage: 'single-code-sampling', samplingPoints: SZ.cells * NSP * NSP, localIllumRange: localWB ? [localWBW, localWBH] : null, wbGain: wbGain.slice(), hueOffsets: hueOffsets.slice() });
+    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'h', SCALE: SCALE, tl: [tl.x, tl.y], tr: [tr.x, tr.y], bl: [bl.x, bl.y], h: H.h, timingScore: tScore, sample0: H.map(71.5, 8.5) });
 
     // 读取格值（分辨率自适应：按格子的图像像素尺寸决定采样密度；网格几何按档位）
     var vals = new Uint8Array(SZ.cells);
@@ -1166,7 +1304,9 @@
     var colVotes = [0, 0, 0, 0];
     function pop32(x) { return pop8[x & 255] + pop8[(x >>> 8) & 255] + pop8[(x >>> 16) & 255] + pop8[(x >>> 24) & 255]; }
     // 软判决预计算：每模板的亮点数与掩码（按采样序打包 hi/lo），供连续彩色度打分
-    var sR = soft ? new Float64Array(nsq) : null, sG = soft ? new Float64Array(nsq) : null, sB = soft ? new Float64Array(nsq) : null, sC = soft ? new Float64Array(nsq) : null;
+    // 图形与颜色分离采样：即使失焦/反光使色度下降，亮度仍可保留 8×8 图形位；
+    // 颜色随后仅在图形亮点上独立投票，避免“颜色阈值失效”连带抹掉形状信息。
+    var sR = new Float64Array(nsq), sG = new Float64Array(nsq), sB = new Float64Array(nsq), sC = new Float64Array(nsq), sL = new Float64Array(nsq);
     for (i = 0; i < SZ.cells; i++) {
       var gridIdx = gpos[i];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
@@ -1195,8 +1335,8 @@
             for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
               var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
               if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
-              var oq = yq * stride + xq * 4;
-              rq += rgba[oq]; gq += rgba[oq + 1]; bq += rgba[oq + 2]; nv++;
+              var oq = yq * stride + xq * 4, gainQ = localGainAt(w, h, xq, yq);
+              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; nv++;
             }
           if (!nv) { bad = true; break; }
           rq /= nv; gq /= nv; bq /= nv;
@@ -1236,46 +1376,57 @@
           else if (mx2 === g2) hue2 = 120 + ((b2 - r2) / ch2) * 60;
           else hue2 = 240 + ((r2 - g2) / ch2) * 60;
           var ci2 = hueClassify(hue2, 12);
-          if (ci2 >= 0) colVotes[ci2] += sC[q];
+          // 形状参与判色：模板点亮位权重 1，背景位保留 0.2 作为反射/错位兜底；
+          // 不把颜色阈值当成唯一依据，8×8 图形和色相共同决定该格颜色。
+          var posShape = nsq - 1 - q;
+          var litShape = posShape >= 32 ? (PT.softLit[bestSym2][0] >>> (posShape - 32)) & 1 : (PT.softLit[bestSym2][1] >>> posShape) & 1;
+          var shapeWeight = litShape ? 1 : 0.2;
+          if (ci2 >= 0) colVotes[ci2] += sC[q] * shapeWeight;
+          else if (ch2 >= 40) colVotes[hueNearest(hue2)] += sC[q] * 0.4 * shapeWeight;
         }
         for (var cl2 = 1; cl2 < 4; cl2++) if (colVotes[cl2] > colVotes[cmax]) cmax = cl2;
         if (colVotes[cmax] < 0.01) { vals[i] = 255; continue; }
         vals[i] = (cmax << SYMBOL_BITS) | bestSym2;
         continue;
       }
+      // 先采集亮度/颜色，再分离判决：亮度决定 8×8 图形位，色相只决定颜色位。
+      // 这样失焦造成色度下降时不会连带把图形位抹成 0；颜色证据不足的格仍置未知。
+      var sampleL = new Float64Array(nsq), sampleR = new Float64Array(nsq), sampleG = new Float64Array(nsq), sampleB = new Float64Array(nsq), maxL = 0;
       for (var sp = 0; sp < nsq; sp++) {
-        // 单应内联（避免每次调用分配数组）
         var mx2 = ox + px[sp], my2 = oy + py[sp];
         var wden = h6 * mx2 + h7 * my2 + 1;
         var sx2 = (h0 * mx2 + h1 * my2 + h2) / wden, sy2 = (h3 * mx2 + h4 * my2 + h5) / wden;
-        // floor 而非 round：round(x+0.5) 会偏到下一格（越界到格间空隙）
         var xi = Math.floor(sx2), yi = Math.floor(sy2);
         if (xi < 0 || yi < 0 || xi >= w || yi >= h) { bad = true; break; }
-        var oi = yi * stride + xi * 4;
-        var r = rgba[oi], g = rgba[oi + 1], b = rgba[oi + 2];
-        var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-        var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-        var chroma = mx - mn;
-        var bit = 0;
-        if (chroma >= CHROMA_THR) {
-          // 色相（HSV 简化）：由 max 分量决定 60° 扇区
-          var hue;
-          if (mx === r) hue = ((g - b) / chroma) * 60;
-          else if (mx === g) hue = 120 + ((b - r) / chroma) * 60;
-          else hue = 240 + ((r - g) / chroma) * 60;
-          if (hue < 0) hue += 360;
-          var cIdx = hueClassify(hue, 12);
-          if (cIdx >= 0) { colVotes[cIdx]++; cnt++; bit = 1; }
-        }
-        patHi = (patHi << 1) | ((patLo >>> 31) & 1);
-        patLo = ((patLo << 1) | bit) >>> 0;
+        var oi = yi * stride + xi * 4, gainI = localGainAt(w, h, xi, yi);
+        var r = rgba[oi] * gainI[0], g = rgba[oi + 1] * gainI[1], b = rgba[oi + 2] * gainI[2];
+        var lumI = r * 0.299 + g * 0.587 + b * 0.114;
+        sampleR[sp] = r; sampleG[sp] = g; sampleB[sp] = b; sampleL[sp] = lumI;
+        if (lumI > maxL) maxL = lumI;
       }
-      if (bad || cnt < Math.max(2, nsq * 0.08)) { vals[i] = 255;  continue; } // 采样失败 → 用 RS 纠
-      // 格子颜色 = 彩色点多数色
+      if (bad || maxL < 24) { vals[i] = 255; continue; }
+      var lumaThr = Math.max(18, maxL * 0.24);
+      for (sp = 0; sp < nsq; sp++) {
+        var rI = sampleR[sp], gI = sampleG[sp], bI = sampleB[sp], chromaI = Math.max(rI, gI, bI) - Math.min(rI, gI, bI);
+        var bitI = sampleL[sp] >= lumaThr ? 1 : 0;
+        var cIdxI = -1;
+        if (bitI && chromaI >= 16) {
+          var hueI;
+          if (Math.max(rI, gI, bI) === rI) hueI = ((gI - bI) / chromaI) * 60;
+          else if (Math.max(rI, gI, bI) === gI) hueI = 120 + ((bI - rI) / chromaI) * 60;
+          else hueI = 240 + ((rI - gI) / chromaI) * 60;
+          if (hueI < 0) hueI += 360;
+          cIdxI = hueClassify(hueI, 16);
+          if (cIdxI >= 0) colVotes[cIdxI]++;
+        }
+        if (cIdxI >= 0) cnt++;
+        patHi = (patHi << 1) | ((patLo >>> 31) & 1);
+        patLo = ((patLo << 1) | bitI) >>> 0;
+      }
+      if (bad || cnt < Math.max(2, nsq * 0.08)) { vals[i] = 255; continue; }
       var bestC = 0;
       for (var cl = 1; cl < 4; cl++) if (colVotes[cl] > colVotes[bestC]) bestC = cl;
       if (colVotes[bestC] < Math.max(1, nsq * 0.04)) { vals[i] = 255; continue; }
-      // 匹配符号（16 模板，popcount Hamming）
       var bestSym = 0, bestD = nsq + 1;
       var tplT = PT.tpl;
       for (var s = 0; s < 16; s++) {
@@ -1293,6 +1444,7 @@
       if (val === 255) failCount++;
       bw.write(val === 255 ? 0 : val, BITS_PER_CELL);
     }
+    setInfo({ unknownCells: failCount });
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'cells', fail: failCount, total: SZ.cells });
     var bytes = new Uint8Array(bw.finish());
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'vals', first: Array.from(vals.slice(0, 6)), permFirst: Array.from(gperm.slice(0, 6)) });
@@ -1305,7 +1457,7 @@
       rsOut.set(dec, blk * RS_K);
     }
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'rs', anyFail: anyFail, failBlk: failBlk, bytes: Array.from(bytes.subarray(0, 8)) });
-    if (anyFail) { cands = dropTriple(cands, sel); continue; }
+    if (anyFail) { setInfo({ stage: 'cell-parse-failed' }); cands = dropTriple(cands, sel); continue; }
     // 解析帧头（格式字节必须与标记码档位一致 → 双保险）
     var plen = rsOut[0] | (rsOut[1] << 8);
     if (plen > SZ.packet || plen < 12) { cands = dropTriple(cands, sel); continue; }
@@ -1313,6 +1465,7 @@
     var packet = new Uint8Array(plen);
     packet.set(rsOut.subarray(9, 9 + plen), 0);
     packets.push(packet);
+    setInfo({ stage: 'single-code-ok', symbols: packets.length, symbolsPerFrame: packets.length, grid: SZ.grid, symbolSize: SZ.total, informationDensity: SZ.packet, formatByte: sIdx + 1 });
     if (!firstH) firstH = H; // 记录首个符号的单应（供帧间复用）
     cands = dropTriple(cands, sel); // 该符号已解出，移除其 3 个寻像候选
     } // for symN
@@ -1325,7 +1478,7 @@
   // 复制精简版采样+RS+帧头流程（单符号），命中 ~15-25ms/帧
   var _lastH = null; // {x..} 由 decodeAttempt 成功时写入；decodeFrame 优先尝试
   var _lastSizeIdx = 0; // 档位随单应缓存（tracking 复用；标记码失败时兜底）
-  function decodeFromH(rgba, w, h, H, INNER, soft, sIdx) {
+  function decodeFromH(rgba, w, h, H, INNER, soft, sIdx, rMode) {
     // 画面可能已切换到其它档位：重读标记码（失败沿用传入档位）
     var sm = readSizeMark(rgba, w, h, H);
     if (sm !== null) sIdx = sm;
@@ -1388,7 +1541,9 @@
     var colVotes = [0, 0, 0, 0];
     function pop32(x) { return pop8[x & 255] + pop8[(x >>> 8) & 255] + pop8[(x >>> 16) & 255] + pop8[(x >>> 24) & 255]; }
     var h0 = H.h[0], h1 = H.h[1], h2 = H.h[2], h3 = H.h[3], h4 = H.h[4], h5 = H.h[5], h6 = H.h[6], h7 = H.h[7];
-    var sR = soft ? new Float64Array(nsq) : null, sG = soft ? new Float64Array(nsq) : null, sB = soft ? new Float64Array(nsq) : null, sC = soft ? new Float64Array(nsq) : null;
+    // 图形与颜色分离采样：即使失焦/反光使色度下降，亮度仍可保留 8×8 图形位；
+    // 颜色随后仅在图形亮点上独立投票，避免“颜色阈值失效”连带抹掉形状信息。
+    var sR = new Float64Array(nsq), sG = new Float64Array(nsq), sB = new Float64Array(nsq), sC = new Float64Array(nsq), sL = new Float64Array(nsq);
     for (i = 0; i < SZ.cells; i++) {
       var gridIdx = gpos[i];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
@@ -1414,8 +1569,8 @@
             for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
               var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
               if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
-              var oq = yq * stride + xq * 4;
-              rq += rgba[oq]; gq += rgba[oq + 1]; bq += rgba[oq + 2]; nv++;
+              var oq = yq * stride + xq * 4, gainQ = localGainAt(w, h, xq, yq);
+              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; nv++;
             }
           if (!nv) { bad = true; break; }
           rq /= nv; gq /= nv; bq /= nv;
@@ -1455,7 +1610,13 @@
           else hue2 = 240 + ((r2 - g2) / ch2) * 60;
           if (hue2 < 0) hue2 += 360;
           var ci2 = hueClassify(hue2, 12);
-          if (ci2 >= 0) colVotes[ci2] += sC[q];
+          // 形状参与判色：模板点亮位权重 1，背景位保留 0.2 作为反射/错位兜底；
+          // 不把颜色阈值当成唯一依据，8×8 图形和色相共同决定该格颜色。
+          var posShape = nsq - 1 - q;
+          var litShape = posShape >= 32 ? (PT.softLit[bestSym2][0] >>> (posShape - 32)) & 1 : (PT.softLit[bestSym2][1] >>> posShape) & 1;
+          var shapeWeight = litShape ? 1 : 0.2;
+          if (ci2 >= 0) colVotes[ci2] += sC[q] * shapeWeight;
+          else if (ch2 >= 40) colVotes[hueNearest(hue2)] += sC[q] * 0.4 * shapeWeight;
         }
         for (var cl2 = 1; cl2 < 4; cl2++) if (colVotes[cl2] > colVotes[cmax]) cmax = cl2;
         if (colVotes[cmax] < 0.01) { vals[i] = 255; continue; }
@@ -1468,8 +1629,8 @@
         var sx2 = (h0 * mx2 + h1 * my2 + h2) / wden, sy2 = (h3 * mx2 + h4 * my2 + h5) / wden;
         var xi = Math.floor(sx2), yi = Math.floor(sy2);
         if (xi < 0 || yi < 0 || xi >= w || yi >= h) { bad = true; break; }
-        var oi = yi * stride + xi * 4;
-        var r = rgba[oi], g = rgba[oi + 1], b = rgba[oi + 2];
+        var oi = yi * stride + xi * 4, gainI = localGainAt(w, h, xi, yi);
+        var r = rgba[oi] * gainI[0], g = rgba[oi + 1] * gainI[1], b = rgba[oi + 2] * gainI[2];
         var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
         var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
         var chroma = mx - mn;
@@ -1561,16 +1722,21 @@
   ];
   function decodeFrame(rgba, w, h) {
     detToken++;
+    setInfo({ stage: 'sampling', candidates: 0, symbols: 0, symbolsPerFrame: 0, attemptIndex: -1, attemptsTried: 0, source: 'full' });
     // 白平衡色相校正（真实相机 AWB 偏暖/偏冷会平移色相；黑白 QR 帧不会走到这里）
+    estimateWBGain(rgba, w, h);
+    estimateLocalWB(rgba, w, h);
     hueOffsets = estimateHueOffsets(rgba, w, h);
     // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
     if (_lastH) {
       var fast;
-      try { fast = decodeFromH(rgba, w, h, _lastH, 6, true, _lastSizeIdx); } catch (e) { fast = []; }
-      if (fast && fast.length) return fast;
+      setInfo({ source: 'tracking', attemptIndex: 0, attemptsTried: 1 });
+      try { fast = decodeFromH(rgba, w, h, _lastH, 6, true, _lastSizeIdx, 0); } catch (e) { fast = []; }
+      if (fast && fast.length) { setInfo({ stage: 'single-code-ok', symbols: fast.length, symbolsPerFrame: fast.length }); return fast; }
       // 复用失败（画面变化/切包）：继续完整检测，_lastH 会被新成功帧刷新
     }
     for (var a = 0; a < ATTEMPTS.length; a++) {
+      setInfo({ attemptIndex: a, attemptsTried: a + 1, source: 'full' });
       var out;
       try { out = decodeAttempt(rgba, w, h, ATTEMPTS[a][0], ATTEMPTS[a][1], ATTEMPTS[a][2], ATTEMPTS[a][3], ATTEMPTS[a][4]); } catch (e) { out = null; }
       if (out && out.length) return out;
@@ -1584,10 +1750,13 @@
     for (var y = 0; y < h && hits < limit; y += step) {
       for (var x = 0; x < w && hits < limit; x += step) {
         var o = (y * w + x) * 4;
+        // 门控必须是纯当前帧函数：decodeFrame 尚未估计本帧 wbGain，不能依赖上一帧状态。
         var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
         var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
         var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-        if (mx - mn > 48 && mx > 60) hits++;
+        // 预检只回答“是否存在彩色信号”，不能因暗曝光/局部反光把彩色帧误当黑白；
+        // 结构解码会再用色度、图形模板和 RS 严格裁决。
+        if (mx - mn > 30 && mx > 38) hits++;
       }
     }
     return hits >= 12;
@@ -1600,8 +1769,9 @@
     maybeColor: maybeColor,
     render: renderFrame,
     decode: decodeFrame, _decodeAttempt: decodeAttempt,
+    info: function () { var o = {}; for (var k in lastInfo) o[k] = lastInfo[k]; return o; },
     readSizeMark: readSizeMark,
-    _hueOffset: function(){ return hueOffset; },
+    _hueOffset: function(){ return hueOffsets.slice(); },
     rsEncode: rsEncode, rsDecode: rsDecode,
     _perm: perm, _cellPos: cellPos,
     _detect: function (rgba, w, h) {

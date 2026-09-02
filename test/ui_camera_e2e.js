@@ -162,6 +162,7 @@ async function runReceiver(url, y4mPath, expectedText) {
       if (ready) break;
       await sleep(300);
     }
+    let sawVideo = false;
     while (Date.now() - t0 < 60000) {
       const st = await evalPage(send, `(() => {
         const t = document.body.innerText;
@@ -182,6 +183,7 @@ async function runReceiver(url, y4mPath, expectedText) {
         started = clicked;
         log('[receiver] click attempt: ' + clicked);
       }
+      if (st.vw > 0 && st.hasSrc) sawVideo = true;
       if (!started || st.vw > 0 || st.recText) log('[receiver] t=' + (Date.now() - t0) + 'ms started=' + started + ' vw=' + st.vw + ' src=' + st.hasSrc + ' status=' + (st.status || '-'));
       if (st.recSection && st.recText) {
         const full = await evalPage(send, `(() => { const ta = document.querySelector('textarea'); return ta ? ta.value : ''; })()`);
@@ -190,11 +192,11 @@ async function runReceiver(url, y4mPath, expectedText) {
         return { ok, recovered: true, textMatch: ok };
       }
       if (st.status.indexOf('Camera error') >= 0) { log('[receiver] camera error: ' + st.status); return { ok: false, recovered: false, err: st.status }; }
-      if (st.videoW > 0 || !started) log('[receiver] t=' + (Date.now()-t0) + 'ms started=' + started + ' hasStart=' + st.hasStart + ' video=' + st.videoW + 'x' + st.videoH + ' status=' + (st.status||'-') + ' rec=' + st.recText.slice(0,20));
+      if (st.vw > 0 || !started) log('[receiver] t=' + (Date.now()-t0) + 'ms started=' + started + ' hasStart=' + st.hasStart + ' video=' + st.vw + ' status=' + (st.status||'-') + ' rec=' + st.recText.slice(0,20));
       await sleep(200);
     }
-    log('[receiver] timeout 60s, no recovery');
-    return { ok: false, recovered: false };
+    log('[receiver] timeout 60s, no recovery; capture=' + (sawVideo ? 'ready' : 'no-frame'));
+    return { ok: false, recovered: false, capture: sawVideo ? 'ready' : 'no-frame' };
   } finally { killProc(proc); }
 }
 
@@ -227,9 +229,10 @@ async function warmUpFakeVideo() {
   log('[y4m] ' + (y4m.length / 1048576).toFixed(1) + 'MB, ' + imgs.length + ' frames @10fps=' + (imgs.length / 10).toFixed(1) + 's');
 
   const expected = 'RaptorQR-CAM-SIM-SMALL-GRID-0123456789-|'.repeat(9);
+  await warmUpFakeVideo();
   for (const recv of [
-    { name: '部署版 #receiver', url: 'file:///' + path.join(ROOT, 'RaptorQR_彩色版.html').replace(/\\/g, '/') + '#receiver' },
-    { name: 'real.html (接收端产物)', url: 'file:///' + path.join(ROOT, 'send_manager', 'receiver', 'out', 'real.html').replace(/\\/g, '/') },
+    { name: 'release.html (发布接收端)', url: 'file:///' + path.join(ROOT, 'send_manager', 'receiver', 'out', 'release.html').replace(/\\/g, '/') },
+    { name: 'real.html (真实接收端)', url: 'file:///' + path.join(ROOT, 'send_manager', 'receiver', 'out', 'real.html').replace(/\\/g, '/') },
   ]) {
     log('===== ' + recv.name + ' =====');
     const r = await runReceiver(recv.url, y4mPath, expected);

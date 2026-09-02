@@ -99,12 +99,14 @@ UI 全自动：Text 页签 → 粘贴 31.5K 文本 → Advanced → 选 **Color 
 浏览器捕获的真实帧 PNG → **出厂 decode worker**（vm 沙箱 + 真实 RaptorQ WASM）→
 RaptorQ 解码 + 解压 → 文本 31499 字符与发送内容**逐字节一致**（含中文）。
 
-### C. 容错识别（对真实捕获帧施加畸变，出厂 worker 解码）
-| 畸变 | 结果 |
-|---|---|
-| 干净帧 / 旋转 2° / 旋转 5°+缩放 0.8 / 缩放 0.7 / 缩放 1.25 / 平移 +80,+60 / 亮度 ×0.7 / 亮度 ×1.3+20 / 透视 ~4% | ✓ 文本精确还原 |
-| 轻度模糊（box r=1，≈轻微失焦） | ✓ 文本精确还原 |
-| 重度模糊（box r=2/3，明显失焦） | ✗ 1px 细笔画被物理抹除，超出该格径的信息极限 |
+### C. 相机验证分层（合成现实模型 ≠ 真机验收）
+`test/camera_sim.js` 现在固定种子运行 11 项现实意图基线（B01–B11）：符号占比、偏移构图、轻微旋转/透视、轻度失焦、低照度噪声、暖光/局部亮度不均和轻反光。它们的来源标记为 `synthetic-camera`，用于可重复回归，不能冒充物理手机拍摄。
+
+`test/camera_stress.js` 单独覆盖 50% 远景、重度模糊、强噪声、极端透视、过曝和局部高光；这些场景可以是 `expected_boundary`，要求报告正确失败阶段且禁止错误接受，不再混入现实基线通过率。
+
+真实手机验证使用 `test/phone_capture_e2e.js` 的 `test/fixtures/phone_capture/manifest.json`：帧目录和 manifest 记录设备、分辨率、距离、角度、光照、反光和预期文本。没有该目录时测试明确输出 `NO_FIXTURE`，不会将合成帧称为真机结果。
+
+阶段归因顺序为：采集无帧 → 颜色门控/信号不足 → Finder/结构锚点失败 → 单码几何/图形/颜色采样失败 → packet/CRC 无效 → 有效包不足（FEC 收集）→ 完整还原。`timingScore`、BR 标记、档位、实际符号像素尺寸和信息密度通过单码旁路遥测提供。
 
 ### D. 高效工作
 - 解码 40.7ms/帧（24.6 帧/s 单线程）≥ 相机分析 5–10 帧/s 需求的 2.5–5×
@@ -160,13 +162,16 @@ node --experimental-vm-modules test/test_browser_e2e.js     # 捕获帧 -> 出�
 node test/cdp_multipacket.js && node --experimental-vm-modules test/test_multipacket.js  # 多包链路
 node test/cdp_parallel.js  && node --experimental-vm-modules test/test_parallel.js      # 并行=4 链路
 node test/perf_test.js     # 性能与吞吐
-node --experimental-vm-modules test/camera_sim.js   # 真实相机退化梯度（11 组合，8/11 通过）
-node test/ui_camera_e2e.js  # 退化帧→假摄像头→接收端 UI 逐字节还原
+node --experimental-vm-modules test/camera_sim.js   # 合成现实相机基线 B01-B11（固定种子，必须 11/11）
+node --experimental-vm-modules test/camera_stress.js # 压力/物理边界（允许 expected_boundary，禁止错误接受）
+node test/phone_capture_e2e.js                       # 真机帧 manifest 就绪性检查（无帧时输出 NO_FIXTURE）
+node test/ui_camera_e2e.js                            # synthetic-camera→假摄像头→release/real 接收端 UI 逐字节还原
 ```
 
-## 已知边界
-- 推荐相机有效倍率 ≥0.6（符号占画面一半以上）；更低倍率下软判决层仍可工作但成功率下降。
-- 重度失焦/运动模糊（σ2+噪声±30）与透视 4% 会抹除模板细节/使寻像位移超模块——边界可用（ 记录）。
-- 白平衡色相偏移已自动校正（±26° 内逐颜色恢复）；手机相机拍屏的屏幕反光（灰底抬升）不影响解码。
+## 已知边界与现实测试说明
+- 当前 `camera_sim.js` 是可重复的合成现实模型，不是物理手机摄像头；真机结果必须来自 `phone_capture_e2e.js` 的帧目录和 manifest。
+- 推荐相机有效倍率 ≥0.6（符号占画面一半以上）；更低倍率、重度失焦/运动模糊和极端噪声属于压力边界，不计入现实基线。
+- 彩色接收已分为：采集帧 → 结构锚点 → 单应归一 → 8×8 图形+4色联合识别 → packet/CRC → RaptorQ/FEC。三个 Finder、TL 尺寸标记、BR 回字型第四角点、顶部/左侧 Timing 都已落实；Timing 目前作为质量遥测，不是单一硬拒帧门槛。
+- 单码层使用全局/局部白点校正、逐颜色色相校正和软判决图形加权；屏幕局部高光/反光仍应通过压力测试和真机帧持续校准。
 - 30° 以上旋转：寻像行扫描未针对大角度验证（<10° 均实测通过）。
-- 黑白模式解码前会先做一次廉价的"是否含饱和色"预检，命中才跑彩色解码，黑白帧开销很小。
+- 黑白模式仍保留标准 QR 解码回退；彩色门控仅作廉价探测，不能替代结构解析。

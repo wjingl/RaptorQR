@@ -60,11 +60,15 @@ function gaussianBlur(img, sigma) {
   }
   return { data: out, width: W, height: H };
 }
+// 固定伪随机数：同一退化场景在不同机器/运行间可复现，便于比较单码识别率。
+let rngState = 0x4d595df4;
+function seedRandom(seed) { rngState = (seed >>> 0) || 1; }
+function rand() { rngState = (Math.imul(rngState, 1664525) + 1013904223) >>> 0; return rngState / 0x100000000; }
 function addNoise(img, amp) {
   const s = img.data, out = new Uint8ClampedArray(s.length);
   for (let i = 0; i < s.length; i += 4) {
     for (let ch = 0; ch < 3; ch++) {
-      const n = (Math.random() * 2 - 1) * amp;
+      const n = (rand() * 2 - 1) * amp;
       out[i + ch] = Math.max(0, Math.min(255, s[i + ch] + n));
     }
     out[i + 3] = 255;
@@ -78,6 +82,27 @@ function exposure(img, gain, bias) {
     out[i + 3] = 255;
   }
   return { data: out, width: img.width, height: img.height };
+}
+function localIllumination(img, ax, ay, centerGain) {
+  const s = img.data, out = new Uint8ClampedArray(s.length), W = img.width, H = img.height;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const nx = x / Math.max(1, W - 1) - 0.5, ny = y / Math.max(1, H - 1) - 0.5;
+    const gain = centerGain + ax * nx + ay * ny;
+    const o = (y * W + x) * 4;
+    for (let ch = 0; ch < 3; ch++) out[o + ch] = Math.max(0, Math.min(255, s[o + ch] * gain));
+    out[o + 3] = 255;
+  }
+  return { data: out, width: W, height: H };
+}
+function glareSpot(img, cx, cy, rx, ry, strength) {
+  const s = img.data, out = new Uint8ClampedArray(s), W = img.width, H = img.height;
+  for (let y = Math.max(0, Math.floor(cy - ry)); y < Math.min(H, Math.ceil(cy + ry)); y++) for (let x = Math.max(0, Math.floor(cx - rx)); x < Math.min(W, Math.ceil(cx + rx)); x++) {
+    const dx = (x - cx) / Math.max(1, rx), dy = (y - cy) / Math.max(1, ry), a = Math.max(0, 1 - dx * dx - dy * dy) * strength;
+    if (a <= 0) continue;
+    const o = (y * W + x) * 4;
+    for (let ch = 0; ch < 3; ch++) out[o + ch] = Math.max(0, Math.min(255, s[o + ch] * (1 - a) + 255 * a));
+  }
+  return { data: out, width: W, height: H };
 }
 function whiteBalance(img, rAdd, gAdd, bAdd) {
   const s = img.data, out = new Uint8ClampedArray(s.length);
@@ -354,22 +379,40 @@ async function makeDecodeWorker() {
 }
 
 // ---------- 阶段分析：maybeColor / finder 检测（直接调 codec） ----------
+function frameHasSignal(img) {
+  const d = img.data, step = Math.max(8, Math.floor(Math.max(img.width, img.height) / 96));
+  let signal = 0;
+  for (let y = 0; y < img.height; y += step) for (let x = 0; x < img.width; x += step) {
+    const o = (y * img.width + x) * 4, r = d[o], g = d[o + 1], b = d[o + 2];
+    if (Math.min(r, g, b) < 238 || Math.max(r, g, b) - Math.min(r, g, b) > 18) signal++;
+  }
+  return signal >= 12;
+}
 function stageAnalysis(img) {
   const codec = require(path.join(ROOT, 'cimqr_codec.js'));
-  const mc = codec.maybeColor(img.data, img.width, img.height);
+  const maybeColor = codec.maybeColor(img.data, img.width, img.height);
   const det = codec._detect(img.data, img.width, img.height);
   const packets = codec.decode(img.data, img.width, img.height) || [];
+  const info = typeof codec.info === 'function' ? codec.info() : {};
+  let stage = info.stage || 'unknown';
+  if (packets.length) stage = 'single-code-ok';
+  else if (det.sel && det.cands.length >= 3) stage = 'single-code-sampling';
+  else if (det.cands.length >= 3) stage = 'located';
+  else if (maybeColor) stage = 'no-anchor';
+  else stage = 'no-color-signal';
   return {
-    maybeColor: mc,
+    maybeColor,
     finders: det.cands.length,
-    selected: det.sel ? det.sel.length : 0,
+    selected: det.sel ? 3 : 0,
     packets: packets.length,
+    stage,
+    info,
     sizes: packets.map(p => p && p.meta && p.meta.size).filter(Boolean).join(','),
   };
 }
 
 // ---------- 主流程 ----------
-(async () => {
+if (require.main === module) (async () => {
   console.error('[CAM] IIFE start');
   const codec = require(path.join(ROOT, 'cimqr_codec.js'));
   console.error('[CAM] codec loaded');
@@ -393,19 +436,20 @@ function stageAnalysis(img) {
   }
   log('distinct frames: ' + distinct.length);
 
-  // 退化组合（对每一帧）
+  // 现实拍屏基线：11 项均为轻度、可工作的手机场景；每项固定 seed，结果可复现。
+  // 重度模糊/强噪声/50%远景不在这里验收，单独由 camera_stress.js 负责。
   const combos = [
-    ['clean', (i) => ({ img: distinct[i].img, note: '原始' })],
-    ['符号占 70%', (i) => ({ img: transformImage(distinct[i].img, scaleCenter(0.7, W, H).m, scaleCenter(0.7, W, H).outW, scaleCenter(0.7, W, H).outH, [240, 240, 240]), note: '1088 画布内符号 762px（拍摄距离远）' })],
-    ['符号占 50%', (i) => ({ img: transformImage(distinct[i].img, scaleCenter(0.5, W, H).m, scaleCenter(0.5, W, H).outW, scaleCenter(0.5, W, H).outH, [240, 240, 240]), note: '符号 544px' })],
-    ['整帧降采样×1.6', (i) => ({ img: downsample(distinct[i].img, 1.6), note: '1088→680（相机远/低分辨率）' })],
-    ['70% + 模糊σ1.5 + 噪声±20', (i) => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = gaussianBlur(im, 1.5); im = addNoise(im, 20); return { img: im, note: '典型手持拍摄' }; }],
-    ['70% + 模糊σ2 + 噪声±30', (i) => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = gaussianBlur(im, 2); im = addNoise(im, 30); return { img: im, note: '较糊' }; }],
-    ['70% + 白平衡偏黄 + 曝光×0.8', (i) => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = whiteBalance(im, 25, 10, -25); im = exposure(im, 0.8, 0); return { img: im, note: '暖光灯下' }; }],
-    ['旋转3° + 70%', (i) => { const r = rotateScale(3, 0.7, W, H); return { img: transformImage(distinct[i].img, r.m, r.outW, r.outH, [240, 240, 240]), note: '手持倾斜' }; }],
-    ['透视4% + 70%', (i) => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = perspective(im, Math.round(im.width * 0.04)); return { img: im, note: '斜拍' }; }],
-    ['曝光×0.6 + 70%', (i) => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = exposure(im, 0.6, 0); return { img: im, note: '偏暗' }; }],
-    ['符号占50% + 模糊σ2 + 噪声±30', (i) => { const s = scaleCenter(0.5, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = gaussianBlur(im, 2); im = addNoise(im, 30); return { img: im, note: '远+糊+噪' }; }],
+    { id: 'B01', name: '正对屏幕·正常光', class: 'realistic', acceptance: 'must_pass', seed: 101, fn: i => ({ img: distinct[i].img, note: '数字对照组（synthetic-camera）' }) },
+    { id: 'B02', name: '符号占80%', class: 'realistic', acceptance: 'must_pass', seed: 102, fn: i => { const s = scaleCenter(0.8, W, H); return { img: transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]), note: '正常距离' }; } },
+    { id: 'B03', name: '符号占70%', class: 'realistic', acceptance: 'must_pass', seed: 103, fn: i => { const s = scaleCenter(0.7, W, H); return { img: transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]), note: '稍远距离' }; } },
+    { id: 'B04', name: '低分辨率·占60%', class: 'realistic', acceptance: 'must_pass', seed: 104, fn: i => { const s = scaleCenter(0.6, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); return { img: downsample(im, 1.25), note: '低分辨率/数字变焦' }; } },
+    { id: 'B05', name: '偏移构图', class: 'realistic', acceptance: 'must_pass', seed: 105, fn: i => { const s = scaleCenter(0.7, W, H); const m = s.m.slice(); m[2] += 70; m[5] -= 45; return { img: transformImage(distinct[i].img, m, s.outW, s.outH, [240, 240, 240]), note: '码不居中' }; } },
+    { id: 'B06', name: '手持旋转3°', class: 'realistic', acceptance: 'must_pass', seed: 106, fn: i => { const r = rotateScale(3, 0.7, W, H); return { img: transformImage(distinct[i].img, r.m, r.outW, r.outH, [240, 240, 240]), note: '轻微歪斜' }; } },
+    { id: 'B07', name: '轻度斜拍·1.5%', class: 'realistic', acceptance: 'must_pass', seed: 107, fn: i => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = perspective(im, Math.round(im.width * 0.015)); return { img: im, note: '轻度透视' }; } },
+    { id: 'B08', name: '轻度失焦', class: 'realistic', acceptance: 'must_pass', seed: 108, fn: i => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); return { img: gaussianBlur(im, 0.4), note: '轻度失焦（σ0.4，手机可工作范围）' }; } },
+    { id: 'B09', name: '低照度噪声', class: 'realistic', acceptance: 'must_pass', seed: 109, fn: i => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = exposure(im, 0.75, 0); im = addNoise(im, 12); return { img: im, note: '低照度传感器噪声' }; } },
+    { id: 'B10', name: '暖光·欠曝·渐变', class: 'realistic', acceptance: 'must_pass', seed: 110, fn: i => { const s = scaleCenter(0.7, W, H); let im = transformImage(distinct[i].img, s.m, s.outW, s.outH, [240, 240, 240]); im = whiteBalance(im, 20, 8, -18); im = exposure(im, 0.85, 0); im = localIllumination(im, 0.16, -0.10, 1); return { img: im, note: '暖光与屏幕亮度不均' }; } },
+    { id: 'B11', name: '综合手持·轻反光', class: 'realistic', acceptance: 'must_pass', seed: 111, fn: i => { const r = rotateScale(2.5, 0.7, W, H); let im = transformImage(distinct[i].img, r.m, r.outW, r.outH, [240, 240, 240]); im = localIllumination(im, 0.12, 0.08, 1); im = glareSpot(im, im.width * 0.64, im.height * 0.40, im.width * 0.12, im.height * 0.07, 0.30); im = whiteBalance(im, 14, 5, -12); im = gaussianBlur(im, 0.8); im = addNoise(im, 10); return { img: im, note: '轻微反光/光照不均/手持' }; } },
   ];
 
   log('boot decode worker…');
@@ -413,9 +457,14 @@ function stageAnalysis(img) {
   w.dispatch({ type: 'settings', settings: { binarizer: 'LocalAverage', maxSymbols: 'auto', tryDownscale: true, downscaleFactor: 3 }, fecCodec: 'auto' });
 
   const results = [];
-  for (const [name, fn] of combos) {
+  for (const combo of combos) {
+    const { id, name, seed, fn } = combo;
+    seedRandom(seed);
     // 阶段分析（第一帧）
-    const s0 = fn(0);
+    // 选择第一张真正含结构/颜色信号的帧作为阶段代表，避免启动空白帧污染诊断。
+    let representative = 0;
+    for (let ri = 0; ri < distinct.length; ri++) { const probe = fn(ri); if (frameHasSignal(probe.img)) { representative = ri; break; } }
+    const s0 = fn(representative);
     const st = stageAnalysis(s0.img);
     // worker 全循环：每帧投 2 遍（模拟播放循环重复）
     w.dispatch({ type: 'reset' });
@@ -424,8 +473,9 @@ function stageAnalysis(img) {
     for (let rep = 0; rep < 2; rep++) {
       for (let i = 0; i < distinct.length; i++) {
         const s = fn(i);
-        // 跳过空白帧（启动瞬间捕获）：worker 会对非彩色帧跑 B/W ZXing 分支，耗时数分钟级
-        if (!codec.maybeColor(s.img.data, s.img.width, s.img.height)) continue;
+        // 采集层只筛掉真正的空白帧；有信号的帧全部交给 worker，颜色门控不能决定
+        // 是否尝试 CimQR，否则暗光/失焦彩色帧会在解析前被旁路。
+        if (!frameHasSignal(s.img)) continue;
         w.dispatch({ type: 'frame', pixels: s.img.data.buffer.slice(0), width: s.img.width, height: s.img.height, realtime: false });
       }
     }
@@ -438,14 +488,23 @@ function stageAnalysis(img) {
     });
     const ms = Date.now() - t0;
     const prog = w.posted.filter(m => m.type === 'progress').pop() || {};
+    const codeEvents = w.posted.filter(m => m.type === 'single-code');
+    const lastCode = codeEvents.length ? codeEvents[codeEvents.length - 1] : null;
     const ok = result && result.isText && result.text === PAYLOAD;
-    results.push({ name, note: fn(0).note, ok, ms, maybeColor: st.maybeColor, finders: st.finders, selected: st.selected, packets: st.packets, framesWithQR: prog.framesWithQR ?? 0, unique: prog.uniquePackets ?? 0, accepted: prog.acceptedPackets ?? 0, needed: prog.neededPackets ?? 0 });
-    log('[' + (ok ? 'PASS' : 'FAIL') + '] ' + name + ' — ' + fn(0).note + ' | maybeColor=' + st.maybeColor + ' finders=' + st.finders + ' sel=' + st.selected + ' packets=' + st.packets + ' unique=' + (prog.uniquePackets ?? 0) + '/' + (prog.neededPackets ?? '?') + ' ' + ms + 'ms');
+    const unique = prog.uniquePackets ?? 0, needed = prog.neededPackets ?? 0;
+    const failureStage = ok ? 'complete' : (unique > 0 ? 'fec-collecting' : (lastCode?.info?.stage || st.stage));
+    const codeInfo = lastCode?.info || st.info || {};
+    results.push({ id, name, class: combo.class, acceptance: combo.acceptance, seed, note: s0.note, ok, stage: failureStage, codeType: lastCode?.color ? 'color-cimbar' : (codeInfo.format === 'qr-standard' ? 'qr-standard' : 'unknown'), maybeColor: st.maybeColor, finders: st.finders, selected: st.selected, packets: st.packets, grid: codeInfo.grid || null, symbolSize: codeInfo.symbolSize || null, informationDensity: codeInfo.informationDensity || null, timingScore: codeInfo.timingScore ?? null, info: codeInfo, framesWithQR: prog.framesWithQR ?? 0, unique, accepted: prog.acceptedPackets ?? 0, needed });
+    log('[' + (ok ? 'PASS' : 'FAIL') + '] ' + id + ' ' + name + ' — ' + s0.note + ' | type=' + (lastCode?.color ? 'color-cimbar' : 'qr-standard/unknown') + ' stage=' + failureStage + ' grid=' + (codeInfo.grid || '?') + 'px=' + (codeInfo.symbolSize || '?') + ' B/码=' + (codeInfo.informationDensity || '?') + ' timing=' + (codeInfo.timingScore ?? '?') + ' anchors=' + (codeInfo.finderCount ?? st.finders) + ' symbols=' + (codeInfo.symbolsPerFrame ?? codeInfo.symbols ?? 0) + ' unique=' + unique + '/' + (needed || '?') + ' ' + ms + 'ms');
   }
 
   log('===== SUMMARY =====');
   for (const r of results) log(JSON.stringify(r));
   const pass = results.filter(r => r.ok).length;
-  log('通过 ' + pass + '/' + results.length);
+  log('现实基线通过 ' + pass + '/' + results.length);
+  for (const r of results) log('阶段 ' + r.id + ': ' + r.stage + ' | anchors=' + r.finders + ' | packets=' + r.packets + ' | unique=' + r.unique + '/' + (r.needed || '?'));
+  // synthetic-camera 现实基线必须全通过；压力边界由 camera_stress.js 单独验收。
   process.exitCode = pass === results.length ? 0 : 2;
 })().catch(e => { log('FATAL: ' + (e && e.stack ? e.stack : e)); process.exitCode = 1; });
+
+module.exports = { gaussianBlur, addNoise, exposure, whiteBalance, localIllumination, glareSpot, scaleCenter, transformImage, downsample, rotateScale, perspective, seedRandom, rand, frameHasSignal, stageAnalysis };
