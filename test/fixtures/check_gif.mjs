@@ -62,6 +62,7 @@
     parallelCount: 1, attemptIndex: -1, attemptsTried: 0, source: 'full', markerUsed: false,
     timingScore: null, grid: null, symbolSize: null, informationDensity: null,
     samplingPoints: 0, unknownCells: 0, meanChroma: null, localIllumRange: null,
+    glareRate: null, shapeMargin: null, colorMargin: null,
     wbGain: [1, 1, 1], hueOffsets: [0, 0, 0, 0]
   };
   function setInfo(p) {
@@ -595,6 +596,53 @@
   }
 
   // 单行扫描，返回该行所有 1:1:3:1:1 图案中心（无对象化 run 编码，栈式累积）
+  // 方向无关 Finder 检测：把检测图按 θ 旋回 canonical 轴后复用 1:1:3:1:1
+  // profile。它只在水平首层不足/失锁时启用，避免正常帧增加 36 次全图扫描成本。
+  // 输出候选映射回原图，并保留 angle 供局部轴向精化和 BR 搜索使用。
+  function rotateGrayForFinder(gray, w, h, angle) {
+    var out = new Uint8Array(w * h), cx = (w - 1) * 0.5, cy = (h - 1) * 0.5;
+    var ca = Math.cos(angle), sa = Math.sin(angle);
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var dx = x - cx, dy = y - cy;
+      // output = source rotated -angle，因此逆采样 source = R(angle)·output
+      var sx = ca * dx - sa * dy + cx, sy = sa * dx + ca * dy + cy, o = y * w + x;
+      if (sx < 0 || sy < 0 || sx >= w - 1 || sy >= h - 1) { out[o] = 255; continue; }
+      var x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+      var p = y0 * w + x0;
+      out[o] = gray[p] * (1 - fx) * (1 - fy) + gray[p + 1] * fx * (1 - fy) + gray[p + w] * (1 - fx) * fy + gray[p + w + 1] * fx * fy;
+    }
+    return out;
+  }
+  function mapFinderFromRotated(c, w, h, angle) {
+    var cx = (w - 1) * 0.5, cy = (h - 1) * 0.5, ca = Math.cos(angle), sa = Math.sin(angle);
+    var dx = c.x - cx, dy = c.y - cy;
+    // rotateGrayForFinder samples source at R(+angle)·p; map canonical candidate back with R(+angle).
+    return { x: ca * dx - sa * dy + cx, y: sa * dx + ca * dy + cy, module: c.module, n: c.n, angle: angle, score: c.n };
+  }
+  function mergeDirectionalFinders(all) {
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+      var c = all[i], found = -1;
+      for (var j = 0; j < out.length; j++) {
+        var q = out[j], lim = Math.max(2, Math.min(c.module, q.module) * 1.8);
+        if (Math.hypot(c.x - q.x, c.y - q.y) <= lim && Math.abs(c.module - q.module) <= Math.max(c.module, q.module) * 0.35) { found = j; break; }
+      }
+      if (found < 0) out.push(c);
+      else if ((c.score || 0) > (out[found].score || 0)) out[found] = c;
+    }
+    return out;
+  }
+  function detectFindersDirectional(gray, w, h) {
+    var all = [], cx = (w - 1) * 0.5, cy = (h - 1) * 0.5;
+    // 5° 粗方向覆盖 0..175°；局部 refineFinder 会以候选方向消除剩余角度误差。
+    for (var deg = 0; deg < 180; deg += 5) {
+      var angle = deg * Math.PI / 180, rg = deg === 0 ? gray : rotateGrayForFinder(gray, w, h, angle);
+      var cs = detectFinders(rg, w, h);
+      for (var i = 0; i < cs.length; i++) all.push(mapFinderFromRotated(cs[i], w, h, angle));
+    }
+    return mergeDirectionalFinders(all);
+  }
+
   function scanFinderRow(gray, w, y, thr, minModule) {
     var base = y * w;
     var d0 = 0, l0 = 0, d1 = 0, l1 = 0, d2 = 0, l2 = 0, d3 = 0, l3 = 0, d4 = 0, l4 = 0;
@@ -664,9 +712,10 @@
             var d = dot(t, u, v);
             var legRatio = Math.abs(d1 - d2) / Math.max(d1, d2);
             var mRatio = Math.abs(t.module - u.module) / Math.max(t.module, u.module) + Math.abs(t.module - v.module) / Math.max(t.module, v.module);
-            var modRatioOK = d1 / t.module > 16 && d1 / t.module < 220; // 下界 16：24×24 最小档 ratio≈21
-            if (Math.abs(d) > 0.2 || legRatio > 0.25 || mRatio > 0.3 || !modRatioOK) continue;
-            var sc = Math.abs(d) + legRatio * 2 + mRatio;
+            var modRatioOK = d1 / t.module > 16 && d1 / t.module < 320; // 强透视下远近边长度会显著变化，仍保留候选交给后续锚点验证
+            if (!modRatioOK || Math.abs(d) > 0.72 || legRatio > 0.72 || mRatio > 0.8) continue;
+            // 透视感知评分而非硬等腿：直角/等腿只作为排序项，Timing/TL/BR/帧头负责最终裁决。
+            var sc = Math.abs(d) * 0.7 + legRatio * 0.8 + mRatio * 0.5;
             if (sc < ps) { ps = sc; bp = [t, u, v]; }
           }
           if (!bp) continue;
@@ -681,7 +730,9 @@
           var mod3 = (tl.module + tr.module + bl.module) / 3;
           if (ps < bestScore) {
             bestScore = ps;
-            best = { tl: tl, tr: tr, bl: bl, module: mod3, orient: cross > 0 ? 1 : -1 };
+            // Finder 边向量直接给出符号 x 轴方向；不能只平均候选扫描角（轴向首层常为 0°）。
+            best = { tl: tl, tr: tr, bl: bl, module: mod3, orient: cross > 0 ? 1 : -1,
+                     angle: Math.atan2(tr.y - tl.y, tr.x - tl.x) };
           }
         }
     return best;
@@ -778,6 +829,48 @@
     return { x: rx, y: accY / accW };
   }
 
+  // 沿 Finder 自身方向精化中心：旋转/斜拍时不再把图像行列当作符号轴。
+  function refineFinderOriented(gray, w, h, cx, cy, module, angle) {
+    if (!angle || Math.abs(angle) < 0.015) return refineFinder(gray, w, h, cx, cy, module);
+    var ca = Math.cos(angle), sa = Math.sin(angle), ux = ca, uy = sa, vx = -sa, vy = ca;
+    function lumAt(x, y) {
+      if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) return 255;
+      var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, p = y0 * w + x0;
+      return gray[p] * (1 - fx) * (1 - fy) + gray[p + 1] * fx * (1 - fy) + gray[p + w] * (1 - fx) * fy + gray[p + w + 1] * fx * fy;
+    }
+    function profile(axis, offset) {
+      var R = Math.ceil(4.2 * module), lo = -R, hi = R, rd = [], rl = [], prev = -1, run = 0;
+      for (var t = lo; t <= hi; t++) {
+        var x = axis === 0 ? cx + ux * t + vx * offset : cx + ux * offset + vx * t;
+        var y = axis === 0 ? cy + uy * t + vy * offset : cy + uy * offset + vy * t;
+        var dark = lumAt(x, y) < 120 ? 1 : 0;
+        if (prev < 0) { prev = dark; run = 1; }
+        else if (dark === prev) run++;
+        else { rd.push(prev); rl.push(run); prev = dark; run = 1; }
+      }
+      if (prev >= 0) { rd.push(prev); rl.push(run); }
+      var best = null, bestErr = 1e9;
+      for (var ri = 0; ri + 4 < rd.length; ri++) {
+        if (!(rd[ri] && !rd[ri + 1] && rd[ri + 2] && !rd[ri + 3] && rd[ri + 4])) continue;
+        var mm = rl[ri + 2] / 3;
+        if (mm < 1.5 || !ratioOK([rl[ri], rl[ri + 1], rl[ri + 2], rl[ri + 3], rl[ri + 4]])) continue;
+        var start = lo; for (var rj = 0; rj < ri; rj++) start += rl[rj];
+        var center = start + rl[ri] + rl[ri + 1] + mm * 1.5, err = Math.abs(center);
+        if (err < bestErr && err <= mm * 2.5) { bestErr = err; best = { center: center, module: mm }; }
+      }
+      return best;
+    }
+    var sx = 0, sy = 0, nx = 0, ny = 0;
+    for (var off = -0.7 * module; off <= 0.7 * module + 1e-6; off += 0.7 * module) {
+      var pxr = profile(0, off), pyr = profile(1, off);
+      if (pxr) { sx += pxr.center; nx++; }
+      if (pyr) { sy += pyr.center; ny++; }
+    }
+    if (nx < 2 || ny < 2) return refineFinder(gray, w, h, cx, cy, module);
+    sx /= nx; sy /= ny;
+    return { x: cx + sx * ux + sy * vx, y: cy + sx * uy + sy * vy };
+  }
+
   // 模板缓存：按 NSP/INNER/渲染倍率桶 分档。相位感知映射（替代旧 floor(pxv)/低倍率
   // 奇偶模板）：非整数倍率下采样像素显示的图案像素 = floor((floor(φ+q·R)-φ)/R)，
   // φ 为格起点图像相位（M=round(32R) 取整后抵消，用实测 finder 中心对齐），
@@ -792,12 +885,81 @@
     var gray = new Uint8Array(w * h), o = 0;
     for (var i = 0; i < w * h; i++, o += 4)
       gray[i] = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
-    normalizedFrame = { rawRGBA: rgba, width: w, height: h, structureLuma: gray, localWB: localWB, qualityMap: null };
+    var highlights = buildHighlightMask(rgba, gray, w, h);
+    normalizedFrame = {
+      rawRGBA: rgba,
+      width: w,
+      height: h,
+      structureLuma: gray,
+      enhancedLuma: null,
+      correctedRGB: null,
+      chroma: null,
+      highlightMask: highlights.mask,
+      qualityMap: highlights.quality,
+      localWB: localWB,
+      wbGain: wbGain.slice(),
+      hueOffsets: hueOffsets.slice(),
+      glareRate: highlights.glare / Math.max(1, w * h)
+    };
     return normalizedFrame;
   }
   function getNormalizedFrame(rgba, w, h) {
     return normalizedFrame && normalizedFrame.rawRGBA === rgba && normalizedFrame.width === w && normalizedFrame.height === h
       ? normalizedFrame : prepareNormalizedFrame(rgba, w, h);
+  }
+  function buildHighlightMask(rgba, gray, w, h) {
+    var n = w * h, mask = new Uint8Array(n), quality = new Uint8Array(n), bright = 0, glare = 0, o;
+    for (var i = 0; i < n; i++) {
+      o = i * 4;
+      var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      var mx = Math.max(r, g, b), mn = Math.min(r, g, b), ch = mx - mn;
+      if (gray[i] > 220) bright++;
+      // 纯白背景/静区不是反光：只标记“比邻域突然变亮”的低色度饱和斑，
+      // 这样白色背景不会把 glareRate 推到接近 1，也不会被采样器整片跳过。
+      var x = i % w, y = (i / w) | 0, sum = gray[i], count = 1;
+      // 十字邻域近似局部背景，足以区分屏幕反光的突变，又比每像素 5×5
+      // 窗口便宜很多；精确采样仍由后面的 2×2/邻域逻辑完成。
+      if (x > 0) { sum += gray[i - 1]; count++; }
+      if (x + 1 < w) { sum += gray[i + 1]; count++; }
+      if (y > 0) { sum += gray[i - w]; count++; }
+      if (y + 1 < h) { sum += gray[i + w]; count++; }
+      var localMean = sum / count;
+      var isGlare = mx > 242 && ch < 34 && localMean < 190 && gray[i] - localMean > 24;
+      if (isGlare) { mask[i] = 1; glare++; quality[i] = 72; }
+      else quality[i] = 255;
+    }
+    return { mask: mask, quality: quality, bright: bright, glare: glare };
+  }
+  // 共享结构增强：3×3 局部均值 + 受限 unsharp。只用于定位/普通 QR 回退，
+  // 不改原始 RGBA，不改变 CimQR 线上协议；彩色数据仍使用原始颜色视图。
+  function enhancedLumaOf(gray, w, h) {
+    var n = w * h, tmp = new Uint8Array(n), out = new Uint8ClampedArray(n), x, y, i;
+    for (y = 0; y < h; y++) {
+      for (x = 0; x < w; x++) {
+        var s = 0, c = 0;
+        for (var dx = -1; dx <= 1; dx++) { var xx = x + dx; if (xx >= 0 && xx < w) { s += gray[y * w + xx]; c++; } }
+        tmp[y * w + x] = s / c;
+      }
+    }
+    for (y = 0; y < h; y++) {
+      for (x = 0; x < w; x++) {
+        var s2 = 0, c2 = 0;
+        for (var dy = -1; dy <= 1; dy++) { var yy = y + dy; if (yy >= 0 && yy < h) { s2 += tmp[yy * w + x]; c2++; } }
+        var p = y * w + x, v = gray[p], blur = s2 / c2;
+        // 1.25 倍高频增强，限幅 ±32，避免把相机噪声变成结构候选。
+        out[p] = Math.max(0, Math.min(255, v + Math.max(-32, Math.min(32, (v - blur) * 1.25))));
+      }
+    }
+    return out;
+  }
+  function getEnhancedLuma(frame) {
+    if (!frame.enhancedLuma) frame.enhancedLuma = enhancedLumaOf(frame.structureLuma, frame.width, frame.height);
+    return frame.enhancedLuma;
+  }
+  function enhanceImageData(rgba, w, h) {
+    var f = getNormalizedFrame(rgba, w, h), e = getEnhancedLuma(f), out = new Uint8ClampedArray(w * h * 4), i, v;
+    for (i = 0; i < w * h; i++) { v = e[i]; out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255; }
+    return { data: out, width: w, height: h };
   }
   function phaseOf(x) { return x - Math.floor(x); }
   var phaseCacheMap = {};
@@ -901,11 +1063,12 @@
 
   // 由寻像图形几何直接估计档位（无需先读标记码，规避 H 的尺寸歧义）：
   // TL↔TR 中心间距在符号坐标 = img-64；模块尺寸恒 8 → 间距/模块 = (img-64)/8
-  function sizeFromSpan(spanPx, modPx) {
-    var img = Math.round(spanPx / modPx) * 8 + 64;
+  function sizeFromSpan(spanPx, modPx, spanY, modY) {
+    var imgX = Math.round(spanPx / Math.max(0.5, modPx)) * 8 + 64;
+    var imgY = spanY == null ? imgX : Math.round(spanY / Math.max(0.5, modY || modPx)) * 8 + 64;
     var best = 0, bestD = 1e9, i;
     for (i = 0; i < SIZES.length; i++) {
-      var d = Math.abs(SIZES[i].img - img);
+      var d = Math.abs(SIZES[i].img - imgX) + Math.abs(SIZES[i].img - imgY);
       if (d < bestD) { bestD = d; best = i; }
     }
     return best;
@@ -1059,6 +1222,98 @@
     return bestD <= maxDev ? best : -1;
   }
 
+  // 密集单格证据：软判决层按 canonical 8×8 图样逐像素采样，而不是先把
+  // 一个格压成少量二值点。H 只负责把 canonical 像素映射回相机，图样匹配始终
+  // 在符号坐标中完成；颜色只在候选图样的亮点上独立评分。
+  // 这不是 RS/FEC：它解决的是同一个二维码内部的视觉采样冗余。
+  function decodeDenseCell(rgba, w, h, H, ox, oy, normalized, stride) {
+    var N = 64, lum = new Float64Array(N), sr = new Float64Array(N),
+        sg = new Float64Array(N), sb = new Float64Array(N), wt = new Float64Array(N);
+    var valid = 0, q, sy, sx, dy, dx, sumR, sumG, sumB, sumW, sumCh;
+    // 每个 canonical 图样像素取四个轻微偏移点，覆盖相机重采样后的像素面积；
+    // 偏移留在该图样像素内部，避免把 8×8 邻接图样混成一个色块。
+    var offs = [-0.22, 0.22];
+    for (sy = 0; sy < 8; sy++) for (sx = 0; sx < 8; sx++) {
+      q = sy * 8 + sx; sumR = sumG = sumB = sumW = sumCh = 0;
+      for (dy = 0; dy < 2; dy++) for (dx = 0; dx < 2; dx++) {
+        var pp = H.map(ox + sx + 0.5 + offs[dx], oy + sy + 0.5 + offs[dy]);
+        var ix = pp[0], iy = pp[1];
+        if (ix < 0 || iy < 0 || ix >= w - 1 || iy >= h - 1) continue;
+        var x0 = ix | 0, y0 = iy | 0, fx = ix - x0, fy = iy - y0;
+        var p00 = y0 * stride + x0 * 4, p10 = p00 + 4, p01 = p00 + stride, p11 = p01 + 4;
+        var rr = rgba[p00] * (1 - fx) * (1 - fy) + rgba[p10] * fx * (1 - fy) + rgba[p01] * (1 - fx) * fy + rgba[p11] * fx * fy;
+        var gg = rgba[p00 + 1] * (1 - fx) * (1 - fy) + rgba[p10 + 1] * fx * (1 - fy) + rgba[p01 + 1] * (1 - fx) * fy + rgba[p11 + 1] * fx * fy;
+        var bb = rgba[p00 + 2] * (1 - fx) * (1 - fy) + rgba[p10 + 2] * fx * (1 - fy) + rgba[p01 + 2] * (1 - fx) * fy + rgba[p11 + 2] * fx * fy;
+        var px = x0, py = y0, quality = 1;
+        if (normalized && normalized.highlightMask && normalized.highlightMask[py * w + px]) quality = 0.28;
+        var gain = localGainAt(w, h, px, py);
+        rr *= gain[0]; gg *= gain[1]; bb *= gain[2];
+        sumR += rr * quality; sumG += gg * quality; sumB += bb * quality;
+        sumCh += (Math.max(rr, gg, bb) - Math.min(rr, gg, bb)) * quality;
+        sumW += quality;
+      }
+      if (sumW <= 0) { wt[q] = 0; continue; }
+      sr[q] = sumR / sumW; sg[q] = sumG / sumW; sb[q] = sumB / sumW;
+      // 使用颜色无关的前景能量：亮点必须同时有色度/通道峰值，避免绿、青、黄、品红
+      // 因 BT.601 亮度不同而把颜色差异误当成图形位。
+      lum[q] = (sumCh / sumW) + Math.max(0, (sumR + sumG + sumB) / sumW - 24) * 0.18;
+      wt[q] = sumW; valid++;
+    }
+    if (valid < 48) return null;
+    // 用 10%/90% 分位估计暗底与亮点，避免一个反光像素决定整格动态范围。
+    var ordered = new Float64Array(N); ordered.set(lum); ordered.sort();
+    var lo = ordered[4], hi = ordered[59], range = hi - lo;
+    if (!(range >= 8)) return { unknown: true, shapeMargin: 0, colorMargin: 0 };
+    var norm = new Float64Array(N), totalW = 0;
+    for (q = 0; q < N; q++) {
+      norm[q] = Math.max(0, Math.min(1, (lum[q] - lo) / range));
+      totalW += wt[q];
+    }
+    var best = 0, second = 0, bestErr = 1e9, secondErr = 1e9, s, bit, err;
+    for (s = 0; s < 16; s++) {
+      err = 0;
+      for (q = 0; q < N; q++) {
+        bit = Number((PATTERNS[s] >> BigInt(63 - q)) & 1n);
+        var de = norm[q] - bit;
+        err += wt[q] * de * de;
+      }
+      if (err < bestErr) { secondErr = bestErr; second = best; bestErr = err; best = s; }
+      else if (err < secondErr) { secondErr = err; second = s; }
+    }
+    var shapeErr = bestErr / Math.max(1, totalW), shapeMargin = (secondErr - bestErr) / Math.max(1, totalW);
+    if (shapeErr > 0.52) return { unknown: true, shapeMargin: shapeMargin, colorMargin: 0 };
+
+    // 对候选图样的亮点做颜色评分：色相距离宽容到 ±75°，同时要求有足够色度；
+    // 背景点不参与主判定，反光点只按低质量权重进入。
+    var colorScore = [0, 0, 0, 0], colorWeight = [0, 0, 0, 0], c, maxC, minC, ch, hue, hd, conf;
+    for (q = 0; q < N; q++) {
+      bit = Number((PATTERNS[best] >> BigInt(63 - q)) & 1n);
+      if (!bit || wt[q] <= 0) continue;
+      var r = sr[q], g = sg[q], b = sb[q];
+      maxC = Math.max(r, g, b); minC = Math.min(r, g, b); ch = maxC - minC;
+      if (ch < 10 || maxC < 18) continue;
+      if (maxC === r) hue = ((g - b) / ch) * 60;
+      else if (maxC === g) hue = 120 + ((b - r) / ch) * 60;
+      else hue = 240 + ((r - g) / ch) * 60;
+      if (hue < 0) hue += 360;
+      for (c = 0; c < 4; c++) {
+        hd = Math.abs(hue - (HUE_EXPECTED[c] + hueOffsets[c]));
+        if (hd > 180) hd = 360 - hd;
+        conf = Math.max(0, 1 - hd / 75) * Math.min(1, ch / 72);
+        colorScore[c] += conf * wt[q]; colorWeight[c] += wt[q];
+      }
+    }
+    var bestC = 0, secondC = 0, bestCS = -1, secondCS = -1;
+    for (c = 0; c < 4; c++) {
+      var cs = colorWeight[c] ? colorScore[c] / colorWeight[c] : 0;
+      if (cs > bestCS) { secondCS = bestCS; secondC = bestC; bestCS = cs; bestC = c; }
+      else if (cs > secondCS) { secondCS = cs; secondC = c; }
+    }
+    var colorMargin = bestCS - Math.max(0, secondCS);
+    if (bestCS < 0.16) return { unknown: true, shapeMargin: shapeMargin, colorMargin: colorMargin };
+    return { value: (bestC << SYMBOL_BITS) | best, unknown: false, shapeMargin: shapeMargin, colorMargin: colorMargin };
+  }
+
   // 顶部/左侧时序线质量：不是数据颜色，而是第三类结构锚点。
   // 当前只做质量评分（不直接拒帧），用于区分“几何已锁定但局部反光”与误检，
   // 后续可用于多候选排序；黑白和彩色共用这组固定黑白交替点。
@@ -1087,6 +1342,7 @@
     // 数据格颜色采样另走 localWB；所有 ATTEMPT 复用同一 NormalizedFrame。
     var normalized = getNormalizedFrame(rgba, w, h);
     var gray = normalized.structureLuma;
+    // 首层保留原始灰度；只有原始候选不足时才切换增强结构视图，避免正常帧为锐化付出成本。
     var i, o = 0;
 
     // 检测降采样目标按帧尺寸自适应：并行网格大画布（如 2176×2176）每符号像素被摊薄，
@@ -1112,9 +1368,33 @@
     var dk = detToken + '_' + dw + '_' + dh;
     if (detCacheKey !== dk) { detCands = detectFinders(dg, dw, dh); detCacheKey = dk; }
     var cands = detCands;
-    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'det', cands: cands.slice(0, 12).map(function(c){return {x:+c.x.toFixed(1), y:+c.y.toFixed(1), m:+c.module.toFixed(2), n:c.n};}) });
-    setInfo({ stage: 'located', candidates: cands.length, finderCount: cands.length, selectedAnchors: 0, symbols: 0, symbolsPerFrame: 0, source: 'full', attemptIndex: -1, grid: null, symbolSize: null, informationDensity: null });
-    if (cands.length < 3) { setInfo({ stage: 'no-anchor' }); return []; }
+    var sel0 = cands.length >= 3 ? selectTriple(cands) : null;
+    // 首层是廉价轴向检测；只有没有形成可靠三角时才启用增强结构视图。
+    // 增强图再进入方向扫描，避免把锐化噪声引入正常帧的候选集合。
+    if (!sel0) {
+      var enhanced = getEnhancedLuma(normalized);
+      var ew = w, eh = h, eg = enhanced;
+      if (SCALE < 1) {
+        ew = dw; eh = dh; eg = new Uint8Array(ew * eh);
+        for (var ey = 0; ey < eh; ey++) {
+          var esy = Math.min(h - 1, Math.round(ey / SCALE));
+          for (var ex = 0; ex < ew; ex++) {
+            var esx = Math.min(w - 1, Math.round(ex / SCALE));
+            eg[ey * ew + ex] = enhanced[esy * w + esx];
+          }
+        }
+      }
+      var enhancedCands = detectFinders(eg, ew, eh);
+      if (enhancedCands.length > cands.length) cands = enhancedCands;
+      sel0 = cands.length >= 3 ? selectTriple(cands) : null;
+      var directional = sel0 ? [] : detectFindersDirectional(eg, ew, eh);
+      if (directional.length > cands.length) cands = directional;
+      sel0 = cands.length >= 3 ? selectTriple(cands) : null;
+      setInfo({ source: 'enhanced', directionalCandidates: directional.length, enhancedCandidates: enhancedCands.length });
+    }
+    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'det', cands: cands.slice(0, 12).map(function(c){return {x:+c.x.toFixed(1), y:+c.y.toFixed(1), m:+c.module.toFixed(2), n:c.n, angle:c.angle||0};}) });
+    setInfo({ stage: 'located', candidates: cands.length, finderCount: cands.length, selectedAnchors: 0, symbols: 0, symbolsPerFrame: 0, source: sel0 ? (sel0.tl && sel0.tl.angle ? 'enhanced' : 'full') : 'full', attemptIndex: -1, grid: null, symbolSize: null, informationDensity: null });
+    if (!sel0) { setInfo({ stage: 'no-anchor' }); return []; }
     // —— 多符号并行：同一帧可含多个 CimQR 符号（网格布局），逐符号解码，解完移除其寻像候选 ——
     var packets = [];
     var MAX_SYMBOLS = 8;
@@ -1130,6 +1410,9 @@
     var bl = { x: sel.bl.x / SCALE, y: sel.bl.y / SCALE };
     var modFull = mod / SCALE;
     // 全分辨率精化寻像中心（缩小检测会引入亚像素误差，直接放大误差放大）
+    // 方向候选只负责提供旋转轴；当前中心精化仍使用原始双轴 run 投票，
+    // 避免局部透视下单条 profile 把 Finder 中心推离真实几何中心。
+    // 旋转/透视由三 Finder + BR 单应共同处理，方向精化留作后续质量通过后的可选微调。
     tl = refineFinder(gray, w, h, tl.x, tl.y, modFull);
     tr = refineFinder(gray, w, h, tr.x, tr.y, modFull);
     bl = refineFinder(gray, w, h, bl.x, bl.y, modFull);
@@ -1137,7 +1420,8 @@
     // 尺寸自描述：先用 finder 几何（间距/模块 → 画布边长）估计档位并构建 H，
     // 再读 TL 角标记码确认/纠正（失败保留几何估计）；档位决定采样/RS/帧头
     var spanPx = Math.hypot(tr.x - tl.x, tr.y - tl.y);
-    var sIdx = sizeFromSpan(spanPx, modFull);
+    var spanPy = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+    var sIdx = sizeFromSpan(spanPx, modFull, spanPy, modFull);
     var SZ = SIZES[sIdx];
     var IMG2 = SZ.img;
     setInfo({ grid: SZ.grid, symbolSize: SZ.total, informationDensity: SZ.packet, formatByte: sIdx + 1 });
@@ -1160,64 +1444,76 @@
     }
     SZ = SIZES[sIdx];
     IMG2 = SZ.img;
-    // BR 对齐标记精化：检测第 4 角的真实位置（5×5 对齐图案，符号坐标中心 img-52），
-    // 用 4 个真实角点重解单应 → 透视不再是平行四边形近似。
-    // 判据：中心暗 + 半径 1 mod 处 8 点白色环带（数据区不存在 18px 宽白域，强区分）
+    // BR 对齐标记精化：用完整初始 H 预测 marker 中心，并在 H 的局部 u/v 坐标中
+    // 搜索。完整 5×5 结构匹配（边框+中心暗、其余白）排除把 TR/Finder 误当 BR。
+    // 命中后以真实第四点重解 DLT；未命中才保留三 Finder 平行四边形回退。
     if (useMarker) try {
-      // 预测用仿射估计（DLT 在 BR 角外推误差可达 10%+，窗口会错过真实标记）
-      var p0 = [tl.x + (tr.x - tl.x) * (IMG2 - 80) / (IMG2 - 64), tl.y + (bl.y - tl.y) * (IMG2 - 80) / (IMG2 - 64)];
-      var mstride = w * 4; // 注意：不能用的 stride（此处尚未赋值，var 提升为 undefined）
-      var markC = null;
-      var SR2 = 5.2 * modFull;
-      var bx0 = Math.max(2, Math.round(p0[0] - SR2)), bx1 = Math.min(w - 3, Math.round(p0[0] + SR2));
-      var by0 = Math.max(2, Math.round(p0[1] - SR2)), by1 = Math.min(h - 3, Math.round(p0[1] + SR2));
-      var best2 = null, bestScore2 = -1;
-      for (var cy2 = by0; cy2 <= by1; cy2 += 1)
-        for (var cx2 = bx0; cx2 <= bx1; cx2 += 1) {
-          var o5 = cy2 * mstride + cx2 * 4;
-          var l5 = (rgba[o5] * 299 + rgba[o5 + 1] * 587 + rgba[o5 + 2] * 114) / 1000;
-          if (l5 >= 110) continue;
-          var hits5 = 0;
-          for (var a5 = 0; a5 < 8; a5++) {
-            // 环半径 1.5×mod：亮环位于 1~2 模块处（0.92×mod 落在暗环内，小倍率下命中失败）
-            var sx5 = Math.round(cx2 + 1.5 * modFull * Math.cos(a5 * 0.7853981633974483));
-            var sy5 = Math.round(cy2 + 1.5 * modFull * Math.sin(a5 * 0.7853981633974483));
-            if (sx5 < 0 || sy5 < 0 || sx5 >= w || sy5 >= h) continue;
-            var so5 = sy5 * mstride + sx5 * 4;
-            var sl5 = (rgba[so5] * 299 + rgba[so5 + 1] * 587 + rgba[so5 + 2] * 114) / 1000;
-            if (sl5 > 170) hits5++;
+      var p0m = H.map(IMG2 - 52, IMG2 - 52);
+      var pu = H.map(IMG2 - 51, IMG2 - 52), pv = H.map(IMG2 - 52, IMG2 - 51);
+      var ux = pu[0] - p0m[0], uy = pu[1] - p0m[1], vx = pv[0] - p0m[0], vy = pv[1] - p0m[1];
+      var ul = Math.hypot(ux, uy) || modFull, vl = Math.hypot(vx, vy) || modFull;
+      ux /= ul; uy /= ul; vx /= vl; vy /= vl;
+      var mstride = w * 4, markC = null, bestMarkScore = -1e9, bestMarkDist = 1e9;
+      function markerPatternScore(cxm, cym) {
+        var score = 0, weight = 0, valid = true;
+        // 中心点 + 靠近四条边的点共同评分；只采中心会形成半模块宽的平台，
+        // 无法从满分候选中选出真正的透视第四点。
+        var probes = [[0, 0, 1], [3.0, 0, 0.8], [-3.0, 0, 0.8], [0, 3.0, 0.8], [0, -3.0, 0.8],
+                      [2.6, 2.6, 0.55], [2.6, -2.6, 0.55], [-2.6, 2.6, 0.55], [-2.6, -2.6, 0.55]];
+        for (var my3 = 0; my3 < 5 && valid; my3++) for (var mx3 = 0; mx3 < 5 && valid; mx3++) {
+          var wantDark3 = (mx3 === 0 || mx3 === 4 || my3 === 0 || my3 === 4 || (mx3 === 2 && my3 === 2));
+          for (var pi3 = 0; pi3 < probes.length; pi3++) {
+            var pr3 = probes[pi3];
+            var qx3 = cxm + ((mx3 - 2) * 8 + pr3[0]) * ux * ul + ((my3 - 2) * 8 + pr3[1]) * vx * vl;
+            var qy3 = cym + ((mx3 - 2) * 8 + pr3[0]) * uy * ul + ((my3 - 2) * 8 + pr3[1]) * vy * vl;
+            if (qx3 < 0 || qy3 < 0 || qx3 >= w - 1 || qy3 >= h - 1) { valid = false; break; }
+            var qx0 = qx3 | 0, qy0 = qy3 | 0, qfx = qx3 - qx0, qfy = qy3 - qy0;
+            var qp = qy0 * mstride + qx0 * 4;
+            var qlum3 = ((rgba[qp] * (1 - qfx) * (1 - qfy) + rgba[qp + 4] * qfx * (1 - qfy) + rgba[qp + mstride] * (1 - qfx) * qfy + rgba[qp + mstride + 4] * qfx * qfy) * 299 +
+                         (rgba[qp + 1] * (1 - qfx) * (1 - qfy) + rgba[qp + 5] * qfx * (1 - qfy) + rgba[qp + mstride + 1] * (1 - qfx) * qfy + rgba[qp + mstride + 5] * qfx * qfy) * 587 +
+                         (rgba[qp + 2] * (1 - qfx) * (1 - qfy) + rgba[qp + 6] * qfx * (1 - qfy) + rgba[qp + mstride + 2] * (1 - qfx) * qfy + rgba[qp + mstride + 6] * qfx * qfy) * 114) / 1000;
+            var signed3 = wantDark3 ? (145 - qlum3) : (qlum3 - 145);
+            score += Math.max(-145, Math.min(145, signed3)) * pr3[2];
+            weight += pr3[2];
           }
-          if (hits5 < 6) continue;
-          var score5 = hits5 * 1000 - Math.hypot(cx2 - p0[0], cy2 - p0[1]);
-          if (score5 > bestScore2) { bestScore2 = score5; best2 = [cx2, cy2]; }
         }
-      if (best2) {
-        // 暗点质心精化：窗口以预测点为中心（粗搜索的环命中偏向偏移候选，
-        // 窗口随粗候选偏移会漏掉标记暗心），半径 2.5 mod 覆盖暗心+外环（对称→质心=中心）
-        var RAD5 = Math.max(5, modFull * 2.5);
-        var wx0 = Math.max(0, Math.round(p0[0] - RAD5)), wx1 = Math.min(w - 1, Math.round(p0[0] + RAD5));
-        var wy0 = Math.max(0, Math.round(p0[1] - RAD5)), wy1 = Math.min(h - 1, Math.round(p0[1] + RAD5));
-        var accW2 = 0, accX2 = 0, accY2 = 0;
-        for (var my = wy0; my <= wy1; my++)
-          for (var mx = wx0; mx <= wx1; mx++) {
-            var mo = my * mstride + mx * 4;
-            var mlum = (rgba[mo] * 299 + rgba[mo + 1] * 587 + rgba[mo + 2] * 114) / 1000;
-            if (mlum < 110) { var wg = 128 - mlum; accX2 += mx * wg; accY2 += my * wg; accW2 += wg; }
-          }
-        if (accW2 > 4) {
-          var cmx = accX2 / accW2 + 0.5, cmy = accY2 / accW2 + 0.5;
-          if (Math.hypot(cmx - p0[0], cmy - p0[1]) < modFull * 2.0) markC = [cmx, cmy]; // 收紧：远离预测的标记视为误检，保留平行四边形 H
+        return valid ? (weight ? score / weight : -1e9) : -1e9;
+      }
+      // 预测误差按模块计；±6 模块覆盖单边斜拍和初始平行四边形外推误差。
+      for (var iu = -6; iu <= 6; iu++) for (var iv = -6; iv <= 6; iv++) {
+        var cx2 = p0m[0] + iu * modFull * ux + iv * modFull * vx;
+        var cy2 = p0m[1] + iu * modFull * uy + iv * modFull * vy;
+        var score2 = markerPatternScore(cx2, cy2), markDist2 = Math.hypot(iu, iv);
+        // 采用连续对比度评分，并在同分时靠近预测点；不再依赖单点黑白阈值和循环顺序。
+        if (score2 > bestMarkScore || (score2 === bestMarkScore && markDist2 < bestMarkDist)) {
+          bestMarkScore = score2; bestMarkDist = markDist2; markC = [cx2, cy2];
         }
       }
+      // 平均对比度至少 48/145；否则不能把其它结构接管为 BR。
+      if (bestMarkScore < 48) markC = null;
       if (markC) {
+        // 粗搜索只按整模块移动，中心仍可能偏 0.5 模块；在局部 u/v 轴内做
+        // 1/4 模块亚像素细化，避免透视下四点 H 被最后一个标记量化误差拉歪。
+        var coarseMark = markC, fineMark = markC, fineScore = -1e9, fineDist = 1e9;
+        for (var fu = -0.75; fu <= 0.7501; fu += 0.25) for (var fv = -0.75; fv <= 0.7501; fv += 0.25) {
+          var fcx = coarseMark[0] + fu * modFull * ux + fv * modFull * vx;
+          var fcy = coarseMark[1] + fu * modFull * uy + fv * modFull * vy;
+          var fs = markerPatternScore(fcx, fcy), fd2 = fu * fu + fv * fv;
+          if (fs > fineScore || (fs === fineScore && fd2 < fineDist)) {
+            fineScore = fs; fineDist = fd2; fineMark = [fcx, fcy];
+          }
+        }
+        markC = fineMark;
+        bestMarkScore = fineScore;
         var H2 = solveHomography([symTL, symTR, symBL, [IMG2 - 52, IMG2 - 52]], [imgTL, imgTR, imgBL, markC]);
         if (H2) H = H2;
       }
-      setInfo({ markerUsed: !!markC });
-      if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'br', refined: !!markC, mark: markC, pred: p0 });
+      setInfo({ markerUsed: !!markC, markerScore: Math.max(0, bestMarkScore), markerDistance: bestMarkDist });
+      if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'br', refined: !!markC, score: bestMarkScore, mark: markC, pred: p0m });
     } catch (e) {}
     var tScore = timingScore(rgba, w, h, H, IMG2);
-    setInfo({ timingScore: +tScore.toFixed(3), stage: 'single-code-sampling', samplingPoints: SZ.cells * NSP * NSP, localIllumRange: localWB ? [localWBW, localWBH] : null, wbGain: wbGain.slice(), hueOffsets: hueOffsets.slice() });
+    var frameGlareRate = normalized.glareRate == null ? null : +normalized.glareRate.toFixed(5);
+    setInfo({ timingScore: +tScore.toFixed(3), stage: 'single-code-sampling', samplingPoints: 0, localIllumRange: localWB ? [localWBW, localWBH] : null, glareRate: frameGlareRate, wbGain: wbGain.slice(), hueOffsets: hueOffsets.slice() });
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'h', SCALE: SCALE, tl: [tl.x, tl.y], tr: [tr.x, tr.y], bl: [bl.x, bl.y], h: H.h, timingScore: tScore, sample0: H.map(71.5, 8.5) });
 
     // 读取格值（分辨率自适应：按格子的图像像素尺寸决定采样密度；网格几何按档位）
@@ -1231,6 +1527,7 @@
     var NSP = Math.max(2, Math.min(6, Math.round(cellPx)));
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) { var __o = self.__CIMQR_DEBUG__({ phase: 'nsp', NSP: NSP, cellPx: cellPx }); if (self.__CIMQR_FORCE_NSP__) NSP = self.__CIMQR_FORCE_NSP__; }
     var nsq = NSP * NSP;
+    setInfo({ samplingPoints: Number(SZ.cells * nsq) });
     // 单应系数局部展开（采样热循环内联用，避免 H.map 每次分配数组）
     var h0 = H.h[0], h1 = H.h[1], h2 = H.h[2], h3 = H.h[3], h4 = H.h[4], h5 = H.h[5], h6 = H.h[6], h7 = H.h[7];
     // 采样格内圈：INNER<8 时采样点向格中心收缩，避开格边缘与 1px 空隙的混色/模糊污染
@@ -1307,6 +1604,7 @@
     // 图形与颜色分离采样：即使失焦/反光使色度下降，亮度仍可保留 8×8 图形位；
     // 颜色随后仅在图形亮点上独立投票，避免“颜色阈值失效”连带抹掉形状信息。
     var sR = new Float64Array(nsq), sG = new Float64Array(nsq), sB = new Float64Array(nsq), sC = new Float64Array(nsq), sL = new Float64Array(nsq);
+    var shapeSum = 0, colorSum = 0, metricN = 0, lowShape = 0, lowColor = 0;
     for (i = 0; i < SZ.cells; i++) {
       var gridIdx = gpos[i];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
@@ -1314,41 +1612,70 @@
       var p0m = H.map(ox, oy), p8x = H.map(ox + 8, oy), p8y = H.map(ox, oy + 8);
       var Rcx = Math.hypot(p8x[0] - p0m[0], p8x[1] - p0m[1]) / 8;
       var Rcy = Math.hypot(p8y[0] - p0m[0], p8y[1] - p0m[1]) / 8;
-      var PT = rMode === 3
+      // 轴向/缩放帧继续使用原有相位模板，保证非整数倍率的像素取整兼容；
+      // 旋转或透视帧改用 canonical 模板，避免把图像 x/y 当成符号轴。
+      var needsCanonicalTpl = rMode === 3 ||
+        Math.abs(H.h[1]) + Math.abs(H.h[3]) > 0.015 ||
+        Math.abs(H.h[6]) + Math.abs(H.h[7]) > 1e-7;
+      var PT = needsCanonicalTpl
         ? getLegacyTpl(NSP, INNER, cellPx < 5.5, (cr & 1) * 2 + (cc & 1))
         : framePair(
             frameSeqId(p0m[0], Rcx, (p8y[0] - p0m[0]) / 8, ox, 0),
             frameSeqId(p0m[1], Rcy, (p8x[1] - p0m[1]) / 8, oy, 1));
       var patHi = 0, patLo = 0, bad = false, cnt = 0;
       colVotes[0] = colVotes[1] = colVotes[2] = colVotes[3] = 0;
-      if (soft) {
-        // —— 软判决：连续彩色度 + 模板相关打分，抗重采样/模糊的边界侵蚀 ——
-        // 每采样点做 2×2 邻域平均（面积采样），提升模糊/重采样下的色度信噪比
-        // 单应内联（避免每次调用分配数组）
+      if (soft && rMode === 4) {
+        // —— 密集软判决末级候选：每个 8×8 图样像素取面积样本，再与完整模板逐像素比较 ——
+        // 这条路径故意比首层慢，但不会把一个格先压成少量二值点；局部反光、AWB
+        // 或一次重采样只会降低该格证据权重，不会直接伪造整幅图样。
+        var dense = decodeDenseCell(rgba, w, h, H, ox, oy, normalized, stride);
+        if (!dense || dense.unknown) {
+          vals[i] = 255;
+          if (dense) { shapeSum += dense.shapeMargin || 0; colorSum += dense.colorMargin || 0; }
+          continue;
+        }
+        vals[i] = dense.value;
+        shapeSum += dense.shapeMargin || 0;
+        colorSum += dense.colorMargin || 0;
+        metricN++;
+        if ((dense.shapeMargin || 0) < 0.035) lowShape++;
+        if ((dense.colorMargin || 0) < 0.08) lowColor++;
+        continue;
+      }
+      {
+        // 生产软路径保留已验证的 2×2/6×6 联合判决；密集逐像素路径仅在
+        // 末级 rMode=4 尝试，避免未经实拍验证的模型降低正常帧通过率。
+        // —— 软判决：局部亮度形状 + 色度颜色联合打分 ——
+        // 每采样点做 2×2 邻域平均；亮度用于 8×8 图案，色度/色相只用于颜色。
         var maxCh = 0;
         for (var q = 0; q < nsq; q++) {
           var mx2 = ox + px[q], my2 = oy + py[q];
           var wden = h6 * mx2 + h7 * my2 + 1;
           var pqx = (h0 * mx2 + h1 * my2 + h2) / wden, pqy = (h3 * mx2 + h4 * my2 + h5) / wden;
-          var rq = 0, gq = 0, bq = 0, nv = 0;
+          var rq = 0, gq = 0, bq = 0, nv = 0, cleanQ = 0;
           for (var dy2 = -1; dy2 <= 1; dy2 += 2)
             for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
               var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
               if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
+              nv++;
               var oq = yq * stride + xq * 4, gainQ = localGainAt(w, h, xq, yq);
-              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; nv++;
+              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; cleanQ++;
             }
           if (!nv) { bad = true; break; }
-          rq /= nv; gq /= nv; bq /= nv;
+          if (!cleanQ) { cleanQ = nv; }
+          rq /= cleanQ; gq /= cleanQ; bq /= cleanQ;
           var mxq = rq > gq ? (rq > bq ? rq : bq) : (gq > bq ? gq : bq);
           var mnq = rq < gq ? (rq < bq ? rq : bq) : (gq < bq ? gq : bq);
-          var chq = mxq - mnq;
-          sR[q] = rq; sG[q] = gq; sB[q] = bq; sC[q] = chq;
+          var chq = mxq - mnq, lumq = rq * 0.299 + gq * 0.587 + bq * 0.114;
+          sR[q] = rq; sG[q] = gq; sB[q] = bq; sC[q] = chq; sL[q] = lumq;
           if (chq > maxCh) maxCh = chq;
         }
-        if (bad || maxCh < CHROMA_THR * 0.7) { vals[i] = 255; continue; } // 全黑/采样失败 → RS
-        var cfSum = 0;
-        for (q = 0; q < nsq; q++) { sC[q] = sC[q] / maxCh; cfSum += sC[q]; }
+        var minLSoft = 1e9, maxLSoft = -1;
+        for (q = 0; q < nsq; q++) { if (sL[q] < minLSoft) minLSoft = sL[q]; if (sL[q] > maxLSoft) maxLSoft = sL[q]; }
+        var lumaRangeSoft = maxLSoft - minLSoft;
+        if (bad || lumaRangeSoft < 10 || maxCh < 1) { vals[i] = 255; continue; }
+        var lfSum = 0;
+        for (q = 0; q < nsq; q++) { sL[q] = (sL[q] - minLSoft) / lumaRangeSoft; lfSum += sL[q]; }
         var bestSym2 = 0, bestD2 = Infinity;
         for (var s3 = 0; s3 < 16; s3++) {
           var L = PT.softLit[s3];
@@ -1356,12 +1683,12 @@
           for (q = 0; q < nsq; q++) {
             var pos = nsq - 1 - q;
             var lit = pos >= 32 ? (L[0] >>> (pos - 32)) & 1 : (L[1] >>> pos) & 1;
-            if (lit) dotv += sC[q];
+            if (lit) dotv += sL[q];
           }
-          var d3 = L[2] - 2 * dotv + cfSum; // Σ|cf-lit|
+          var d3 = L[2] - 2 * dotv + lfSum; // Σ|relative-luma - pattern|
           if (d3 < bestD2) { bestD2 = d3; bestSym2 = s3; }
         }
-        if (bestD2 > nsq * 0.45) { vals[i] = 255; continue; } // 模糊到无法辨认 → RS
+        if (bestD2 > nsq * 0.45) { vals[i] = 255; continue; } // 形状无法辨认 → RS
         // 颜色：按彩色度加权的色相投票
         var cmax = 0;
         for (q = 0; q < nsq; q++) {
@@ -1404,8 +1731,13 @@
         sampleR[sp] = r; sampleG[sp] = g; sampleB[sp] = b; sampleL[sp] = lumI;
         if (lumI > maxL) maxL = lumI;
       }
-      if (bad || maxL < 24) { vals[i] = 255; continue; }
-      var lumaThr = Math.max(18, maxL * 0.24);
+      var minL = 1e9;
+      for (sp = 0; sp < nsq; sp++) if (sampleL[sp] < minL) minL = sampleL[sp];
+      var lumaRange = maxL - minL;
+      if (bad || maxL < 24 || lumaRange < 10) { vals[i] = 255; continue; }
+      // 用格内相对亮度而非全局黑点：加性环境偏色会抬高黑底 RGB，
+      // 但不会抬高同一格内前景与背景的相对差；颜色位仍独立由色相投票。
+      var lumaThr = minL + Math.max(8, lumaRange * 0.24);
       for (sp = 0; sp < nsq; sp++) {
         var rI = sampleR[sp], gI = sampleG[sp], bI = sampleB[sp], chromaI = Math.max(rI, gI, bI) - Math.min(rI, gI, bI);
         var bitI = sampleL[sp] >= lumaThr ? 1 : 0;
@@ -1444,8 +1776,12 @@
       if (val === 255) failCount++;
       bw.write(val === 255 ? 0 : val, BITS_PER_CELL);
     }
-    setInfo({ unknownCells: failCount });
-    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'cells', fail: failCount, total: SZ.cells });
+    setInfo({ unknownCells: failCount,
+      shapeMargin: metricN ? +(shapeSum / metricN).toFixed(4) : null,
+      colorMargin: metricN ? +(colorSum / metricN).toFixed(4) : null,
+      lowShapeCells: lowShape, lowColorCells: lowColor,
+      meanChroma: null });
+    if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'cells', fail: failCount, total: SZ.cells, shapeMargin: metricN ? shapeSum / metricN : null, colorMargin: metricN ? colorSum / metricN : null });
     var bytes = new Uint8Array(bw.finish());
     if (typeof self !== "undefined" && self.__CIMQR_DEBUG__) self.__CIMQR_DEBUG__({ phase: 'vals', first: Array.from(vals.slice(0, 6)), permFirst: Array.from(gperm.slice(0, 6)) });
     // RS 解码（块数随档位）
@@ -1479,6 +1815,7 @@
   var _lastH = null; // {x..} 由 decodeAttempt 成功时写入；decodeFrame 优先尝试
   var _lastSizeIdx = 0; // 档位随单应缓存（tracking 复用；标记码失败时兜底）
   function decodeFromH(rgba, w, h, H, INNER, soft, sIdx, rMode) {
+    var normalized = getNormalizedFrame(rgba, w, h);
     // 画面可能已切换到其它档位：重读标记码（失败沿用传入档位）
     var sm = readSizeMark(rgba, w, h, H);
     if (sm !== null) sIdx = sm;
@@ -1492,6 +1829,7 @@
     var cellPx = Math.hypot(cp8[0] - cp0[0], cp8[1] - cp0[1]);
     var NSP = Math.max(2, Math.min(6, Math.round(cellPx)));
     var nsq = NSP * NSP;
+    setInfo({ samplingPoints: Number(SZ.cells * nsq) });
     var INNER_OFF = (8 - INNER) / 2;
     var px = new Float64Array(nsq), py = new Float64Array(nsq);
     for (i = 0; i < nsq; i++) { px[i] = INNER_OFF + ((i % NSP) + 0.5) / NSP * INNER; py[i] = INNER_OFF + ((i / NSP | 0) + 0.5) / NSP * INNER; }
@@ -1544,6 +1882,7 @@
     // 图形与颜色分离采样：即使失焦/反光使色度下降，亮度仍可保留 8×8 图形位；
     // 颜色随后仅在图形亮点上独立投票，避免“颜色阈值失效”连带抹掉形状信息。
     var sR = new Float64Array(nsq), sG = new Float64Array(nsq), sB = new Float64Array(nsq), sC = new Float64Array(nsq), sL = new Float64Array(nsq);
+    var shapeSum = 0, colorSum = 0, metricN = 0, lowShape = 0, lowColor = 0;
     for (i = 0; i < SZ.cells; i++) {
       var gridIdx = gpos[i];
       var cc = gridIdx % SZ.grid, cr = (gridIdx / SZ.grid) | 0;
@@ -1551,7 +1890,12 @@
       var p0m = H.map(ox, oy), p8x = H.map(ox + 8, oy), p8y = H.map(ox, oy + 8);
       var Rcx = Math.hypot(p8x[0] - p0m[0], p8x[1] - p0m[1]) / 8;
       var Rcy = Math.hypot(p8y[0] - p0m[0], p8y[1] - p0m[1]) / 8;
-      var PT = rMode === 3
+      // 轴向/缩放帧继续使用原有相位模板，保证非整数倍率的像素取整兼容；
+      // 旋转或透视帧改用 canonical 模板，避免把图像 x/y 当成符号轴。
+      var needsCanonicalTpl = rMode === 3 ||
+        Math.abs(H.h[1]) + Math.abs(H.h[3]) > 0.015 ||
+        Math.abs(H.h[6]) + Math.abs(H.h[7]) > 1e-7;
+      var PT = needsCanonicalTpl
         ? getLegacyTpl(NSP, INNER, cellPx < 5.5, (cr & 1) * 2 + (cc & 1))
         : framePair(
             frameSeqId(p0m[0], Rcx, (p8y[0] - p0m[0]) / 8, ox, 0),
@@ -1564,25 +1908,30 @@
           var mx2 = ox + px[q], my2 = oy + py[q];
           var wden = h6 * mx2 + h7 * my2 + 1;
           var pqx = (h0 * mx2 + h1 * my2 + h2) / wden, pqy = (h3 * mx2 + h4 * my2 + h5) / wden;
-          var rq = 0, gq = 0, bq = 0, nv = 0;
+          var rq = 0, gq = 0, bq = 0, nv = 0, cleanQ = 0;
           for (var dy2 = -1; dy2 <= 1; dy2 += 2)
             for (var dx2 = -1; dx2 <= 1; dx2 += 2) {
               var xq = Math.floor(pqx + dx2 * 0.5), yq = Math.floor(pqy + dy2 * 0.5);
               if (xq < 0 || yq < 0 || xq >= w || yq >= h) continue;
+              nv++;
               var oq = yq * stride + xq * 4, gainQ = localGainAt(w, h, xq, yq);
-              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; nv++;
+              rq += rgba[oq] * gainQ[0]; gq += rgba[oq + 1] * gainQ[1]; bq += rgba[oq + 2] * gainQ[2]; cleanQ++;
             }
           if (!nv) { bad = true; break; }
-          rq /= nv; gq /= nv; bq /= nv;
+          if (!cleanQ) { cleanQ = nv; }
+          rq /= cleanQ; gq /= cleanQ; bq /= cleanQ;
           var mxq = rq > gq ? (rq > bq ? rq : bq) : (gq > bq ? gq : bq);
           var mnq = rq < gq ? (rq < bq ? rq : bq) : (gq < bq ? gq : bq);
-          var chq = mxq - mnq;
-          sR[q] = rq; sG[q] = gq; sB[q] = bq; sC[q] = chq;
+          var chq = mxq - mnq, lumq = rq * 0.299 + gq * 0.587 + bq * 0.114;
+          sR[q] = rq; sG[q] = gq; sB[q] = bq; sC[q] = chq; sL[q] = lumq;
           if (chq > maxCh) maxCh = chq;
         }
-        if (bad || maxCh < CHROMA_THR * 0.7) { vals[i] = 255; continue; }
-        var cfSum = 0;
-        for (q = 0; q < nsq; q++) { sC[q] = sC[q] / maxCh; cfSum += sC[q]; }
+        var minLSoft = 1e9, maxLSoft = -1;
+        for (q = 0; q < nsq; q++) { if (sL[q] < minLSoft) minLSoft = sL[q]; if (sL[q] > maxLSoft) maxLSoft = sL[q]; }
+        var lumaRangeSoft = maxLSoft - minLSoft;
+        if (bad || lumaRangeSoft < 10) { vals[i] = 255; continue; }
+        var lfSum = 0;
+        for (q = 0; q < nsq; q++) { sL[q] = (sL[q] - minLSoft) / lumaRangeSoft; lfSum += sL[q]; }
         var bestSym2 = 0, bestD2 = Infinity;
         for (var s3 = 0; s3 < 16; s3++) {
           var L = PT.softLit[s3];
@@ -1590,9 +1939,9 @@
           for (q = 0; q < nsq; q++) {
             var pos = nsq - 1 - q;
             var lit = pos >= 32 ? (L[0] >>> (pos - 32)) & 1 : (L[1] >>> pos) & 1;
-            if (lit) dotv += sC[q];
+            if (lit) dotv += sL[q];
           }
-          var d3 = L[2] - 2 * dotv + cfSum;
+          var d3 = L[2] - 2 * dotv + lfSum;
           if (d3 < bestD2) { bestD2 = d3; bestSym2 = s3; }
         }
         if (bestD2 > nsq * 0.45) { vals[i] = 255; continue; }
@@ -1718,7 +2067,13 @@
     // 旧式相位盲模板兜底（H 中心误差大时相位感知模板过拟合；INNER=7.5+hard 同旧阶梯首层）
     [512, 7.5, false, true, 3],
     [2048, 7.5, false, true, 3],
-    [2048, 7.5, false, false, 3]
+    [2048, 7.5, false, false, 3],
+    // 逐像素 8×8 图样补救：仅在既有硬/软/平行四边形尝试全部失败后启用。
+    // 首层零额外开销；本层用 64 个 canonical 像素×4 邻域面积证据，按图案/颜色 margin
+    // 联合裁决，专门处理实拍中少量格被反光或相位污染的情况。
+    [512, 4.5, true, true, 4],
+    [768, 4.5, true, true, 4],
+    [2048, 4.5, true, true, 4]
   ];
   function decodeFrame(rgba, w, h) {
     detToken++;
@@ -1727,6 +2082,11 @@
     estimateWBGain(rgba, w, h);
     estimateLocalWB(rgba, w, h);
     hueOffsets = estimateHueOffsets(rgba, w, h);
+    if (normalizedFrame && normalizedFrame.rawRGBA === rgba) {
+      normalizedFrame.localWB = localWB;
+      normalizedFrame.wbGain = wbGain.slice();
+      normalizedFrame.hueOffsets = hueOffsets.slice();
+    }
     // 帧间复用：相邻帧画面几乎不变（相机静止/微抖），直接沿用上次成功单应采样
     if (_lastH) {
       var fast;
@@ -1762,11 +2122,18 @@
     return hits >= 12;
   }
 
+  function releaseFrame() {
+    // 仅释放当前帧的全分辨率标准化视图；tracking 只保留小型 H，不保留相机像素。
+    normalizedFrame = null;
+  }
+
   return {
     CELL: CELL, PITCH: PITCH, OFFSET: OFFSET, GRID: GRID, IMG: IMG,
     DATA_CELLS: DATA_CELLS, MAX_PACKET: MAX_PACKET,
     SIZES: SIZES, // 尺寸阶梯：{grid,img,total,cells,stream,blocks,packet}（idx 0=112）
     maybeColor: maybeColor,
+    enhance: enhanceImageData,
+    releaseFrame: releaseFrame,
     render: renderFrame,
     decode: decodeFrame, _decodeAttempt: decodeAttempt,
     info: function () { var o = {}; for (var k in lastInfo) o[k] = lastInfo[k]; return o; },

@@ -97,13 +97,18 @@ s1 = patchWorker(s1, 'decode', (code) => {
   const ys = 'async function ys(r){const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0)return;let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}';
   if (!code.includes(ys)) throw new Error('decode ys not found');
   code = code.replace(ys,
-    'async function ys(r){var mc=CimQR.maybeColor(r.data,r.width,r.height),cp=[];' +
-    // maybeColor 仅为快速统计，不再决定是否尝试彩色解析：暗光/失焦/反光会降低色度，
-    // 但结构和图形仍可能可读。彩色 decode 自带 no-anchor/RS/格式裁决，黑白帧无包时快速返回。
+    'async function ys(r,epoch){if(epoch!==void 0&&epoch!==queueEpoch)return;var mc=CimQR.maybeColor(r.data,r.width,r.height),cp=[],n=[],qrSource="raw";' +
+    // maybeColor 只作为顺序优化提示：黑白帧先走标准 QR，标准 QR 失败后仍继续彩色解析。
+    'try{if(!r||!r.data||!r.width||!r.height)return;const accept=async(list,standard,source)=>{if(!list||!list.length)return false;try{var inf=standard?{stage:"qr-standard",format:"qr-standard",symbols:list.length,source:source,version:list[0]&&list[0].version||0}:{...CimQR.info(),source:source};inf.symbols=list.length;inf.symbolsPerFrame=list.length;self.postMessage({type:"single-code",info:inf,color:!standard})}catch{}let accepted=0;for(const item of list){let packet;try{packet=standard?Di(item.bytes):Di(item)}catch{continue}if(await ws(standard?item:{version:0},packet,accepted===0)&&(accepted++,b!=null&&b.completed)){Vr(b);return true}}if(b&&accepted>0)Vr(b);return accepted>0};' +
+    'if(!mc){n=await mi(r,{..._t,maxSymbols:vs()});if(await accept(n,true,"raw"))return;n=[];}' +
     'try{cp=CimQR.decode(r.data,r.width,r.height)||[]}catch(e2){cp=[]}' +
     'try{self.postMessage({type:"single-code",info:CimQR.info(),color:cp.length>0||mc})}catch(e3){}' +
-    'if(cp.length>0){let i=0;for(const by of cp){let s;try{s=Di(by)}catch{continue}if(await ws({version:0},s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b);return}' +
-    'const n=await mi(r,{..._t,maxSymbols:vs()});if(n.length===0){try{self.postMessage({type:"single-code",info:{stage:mc?"color-parse-failed":"unknown",format:mc?"color-cimbar":"unknown",symbols:0},color:mc})}catch(e5){}return}try{self.postMessage({type:"single-code",info:{stage:"qr-standard",format:"qr-standard",symbols:n.length},color:false})}catch(e6){}let i=0;for(const u of n){let s;try{s=Di(u.bytes)}catch{continue}if(await ws(u,s,i===0)&&(i++,b!=null&&b.completed)){Vr(b);return}}b&&i>0&&Vr(b)}');
+    'if(cp.length&&await accept(cp,false,"full"))return;' +
+    'if(mc)n=await mi(r,{..._t,maxSymbols:vs()});' +
+    'if(n.length===0){try{const e=CimQR.enhance(r.data,r.width,r.height);qrSource="enhanced";n=await mi({data:e.data,width:e.width,height:e.height},{..._t,maxSymbols:vs()})}catch(e4){}}' +
+    'if(n.length===0){try{self.postMessage({type:"single-code",info:{stage:mc?"color-parse-failed":"qr-no-result",format:mc?"color-cimbar":"qr-standard",symbols:0,source:qrSource},color:mc})}catch(e5){}return}' +
+    'await accept(n,true,qrSource);' +
+    '}finally{try{CimQR.releaseFrame&&CimQR.releaseFrame()}catch{}}}');
   // 实时帧"保最新"策略：解码处理中到达的实时帧不排队（相机 30fps 永远有新帧），
   // 只保留最新一帧（pendingLatest），处理完立即跟进——消除积压与陈旧画面延迟
   // 帧哈希去重：发送端循环播放时重复帧占大多数（同一符号反复出现），
@@ -111,10 +116,40 @@ s1 = patchWorker(s1, 'decode', (code) => {
   const msgs = 'function ms(r,n){if(n&&Ae.reduce((u,s)=>u+(s.realtime?1:0),0)>=hs){const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),gs()}async function gs(){if(!Xt){Xt=!0;try{for(;Ae.length>0;){const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[])}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}';
   if (!code.includes(msgs)) throw new Error('decode ms/gs not found');
   code = code.replace(msgs,
-    'var pendingLatest=null;var fhCache=new Map;function fhKey(r){var d=r.data,w=r.width,h=r.height,hh=0,st=Math.max(4,Math.floor(Math.max(w,h)/64));for(var y=0;y<h;y+=st)for(var x=0;x<w;x+=st){var o=(y*w+x)*4;var v=((d[o]>>4)&3)|((d[o+1]>>4)&3)<<2|((d[o+2]>>4)&3)<<4;hh=((hh*31)+v)>>>0}return hh}function ms(r,n){if(n){if(Xt){pendingLatest=r;return}var hk=fhKey(r);if(fhCache.has(hk)){return}if(fhCache.size>64)fhCache.clear();fhCache.set(hk,1);if(Ae.length===0){Ae.push({imageData:r,realtime:!0}),gs();return}const u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1)}Ae.push({imageData:r,realtime:n}),n||gs()}async function gs(){if(!Xt){Xt=!0;try{for(;;){if(pendingLatest){Ae.push({imageData:pendingLatest,realtime:!0}),pendingLatest=null}if(Ae.length===0)break;const r=Ae.shift();try{await ys(r.imageData),b!=null&&b.completed&&(Ae=[],pendingLatest=null)}catch(n){self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1}}}');
-  // reset 时清空帧哈希缓存（新扫描画面全新）
+    'var pendingLatest=null,fhCache=new Map,queueEpoch=0,MAX_NONREALTIME_QUEUE=8;function fhKey(r){var d=r.data,w=r.width,h=r.height,hh=0,st=Math.max(4,Math.floor(Math.max(w,h)/64));for(var y=0;y<h;y+=st)for(var x=0;x<w;x+=st){var o=(y*w+x)*4;var v=((d[o]>>4)&3)|((d[o+1]>>4)&3)<<2|((d[o+2]>>4)&3)<<4;hh=((hh*31)+v)>>>0}return hh}function clearDecodeQueue(){Ae.length=0;pendingLatest=null}function ms(r,n){if(b&&b.completed)return;if(n){if(Xt){pendingLatest=r;return}var hk=fhKey(r);if(fhCache.has(hk))return;if(fhCache.size>64)fhCache.clear();fhCache.set(hk,1);if(Ae.length===0){Ae.push({imageData:r,realtime:!0}),gs();return}var u=Ae.findIndex(s=>s.realtime);u>=0&&Ae.splice(u,1);if(Ae.length>1)Ae.splice(0,Ae.length-1)}else{if(Ae.length>=MAX_NONREALTIME_QUEUE)Ae.shift();Ae.push({imageData:r,realtime:!1})}n||gs()}async function gs(){if(!Xt){Xt=!0;var ep=queueEpoch;try{for(;;){if(ep!==queueEpoch)break;if(pendingLatest){Ae.push({imageData:pendingLatest,realtime:!0}),pendingLatest=null}if(Ae.length===0)break;const r=Ae.shift();try{await ys(r.imageData,ep),self.postMessage({type:"frame-ack"}),b!=null&&b.completed&&(clearDecodeQueue(),queueEpoch++)}catch(n){self.postMessage({type:"frame-ack"}),self.postMessage({type:"error",message:`Frame error: ${n.message??String(n)}`})}}}finally{Xt=!1;if(pendingLatest||Ae.length>0)gs()}}}');
+  // FEC 状态上限与元数据锁定：永不完成/恶意流不能让 generation Map、dedup Set
+  // 和 RLNC 行数据无限增长；完成、reset、异常都主动断开当前 decoder 引用。
+  const fecMarker = 'const hs=60,ps=4;let b=null,Ae=[],Xt=!1,_t=Te,Ct=nn,nr=!1,ar=!1;';
+  if (!code.includes(fecMarker)) throw new Error('FEC state marker not found');
+  code = code.replace(fecMarker,
+    'const hs=60,ps=4,MAX_DATA_LENGTH=67108864,MAX_GENERATIONS=256,MAX_UNIQUE_PACKETS=8192,MAX_ACCEPTED_BYTES=134217728;let b=null,Ae=[],Xt=!1,_t=Te,Ct=nn,nr=!1,ar=!1;function disposeFec(){if(!b)return;try{if(b.decoder&&b.decoder.inner&&typeof b.decoder.inner.free==="function")b.decoder.inner.free();else if(b.decoder&&typeof b.decoder.free==="function")b.decoder.free();}catch{};b=null}function guardHeader(u,payloadLen){if(!u||!Number.isInteger(u.dataLength)||u.dataLength<0||u.dataLength>MAX_DATA_LENGTH||!Number.isInteger(u.totalGenerations)||u.totalGenerations<1||u.totalGenerations>MAX_GENERATIONS||!Number.isInteger(u.generationIndex)||u.generationIndex<0||u.generationIndex>=u.totalGenerations||!Number.isInteger(u.symbolIndex)||u.symbolIndex<0||u.symbolIndex>31||!Number.isInteger(payloadLen)||payloadLen<5||payloadLen>1048576)return false;return true}');
+  const wsGuard = 'async function ws(r,n,i){const u=ki(n.header);return $s(u)?u==="wasm-raptorq"?_s(r,n,i):bs(r,n,i):(lr(u),!1)}';
+  if (!code.includes(wsGuard)) throw new Error('FEC ws marker not found');
+  code = code.replace(wsGuard,
+    'async function ws(r,n,i){if(!n||!guardHeader(n.header,n.payload&&n.payload.length)){disposeFec();self.postMessage({type:"error",message:"FEC header rejected: limits or metadata invalid"});return false}const u=ki(n.header);return $s(u)?u==="wasm-raptorq"?_s(r,n,i):bs(r,n,i):(lr(u),!1)}');
+  code = code.replace('function bs(r,n,i){const u=n.header;',
+    'function bs(r,n,i){const u=n.header;if(b&&((b.codec!=="js-rlnc")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed))return false;');
+  code = code.replace('function _s(r,n,i){const u=n.header;',
+    'function _s(r,n,i){const u=n.header;if(b&&((b.codec!=="wasm-raptorq")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed))return false;');
+  code = code.replace('completed:!1,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}',
+    'completed:!1,acceptedBytes:0,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}', true);
+  code = code.replace('completed:!1,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}',
+    'completed:!1,acceptedBytes:0,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}', true);
+  code = code.replace('b.dedup.add(s);const h=u.generationIndex;',
+    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s);b.acceptedBytes+=n.payload.length;const h=u.generationIndex;');
+  code = code.replace('b.dedup.add(s),b.stats.acceptedPackets++,b.receivedPackets++;',
+    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s),b.acceptedBytes+=n.payload.length,b.stats.acceptedPackets++,b.receivedPackets++;');
+
+  // 将单码 codec 的全分辨率缓存限制在当前帧生命周期内，避免排队帧长期持有 rawRGBA。
+  const ysHead = 'async function ys(r,epoch){if(epoch!==void 0&&epoch!==queueEpoch)return;var mc=CimQR.maybeColor(r.data,r.width,r.height),cp=[],n=[],qrSource="raw";';
+  if (!code.includes(ysHead)) throw new Error('decode ys head not found');
+  // `ys` replacement already owns the per-frame try/finally; do not wrap it a second time.
+  code = code.replace('r.completed=!0}', 'r.completed=!0;try{if(r.decoder&&r.decoder.inner&&typeof r.decoder.inner.free==="function")r.decoder.inner.free();}catch{};r.decoder=null;r.dedup&&r.dedup.clear();clearDecodeQueue()}');
+  code = code.replace('if(n.type==="frame"){let i=n.imageData??n.frameData??null;', 'if(n.type==="frame"){if(b&&b.completed)return;let i=n.imageData??n.frameData??null;');
+
+  // reset 时清空帧哈希、pendingLatest 和队列 epoch；旧异步 drain 返回后不能复活旧帧。
   code = code.split('if(n.type==="reset"){b=null,Ae=[],nr=!1,ar=!1;return}')
-             .join('if(n.type==="reset"){b=null,Ae=[],nr=!1,ar=!1,fhCache&&fhCache.clear();return}');
+             .join('if(n.type==="reset"){disposeFec(),clearDecodeQueue(),queueEpoch++,nr=!1,ar=!1,fhCache&&fhCache.clear();return}');
   return code;
 });
 
@@ -124,6 +159,62 @@ let s2 = script2;
 // 2a0. 彩色符号尺寸（像素）模块变量：Standard 1088 / HD 2176，UI 下拉可调，Start 时生效
 s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize=false,CIM_CS=[[112,1024,7241],[104,952,6116],[96,880,5241],[80,736,3491],[64,592,2116],[56,520,1616],[48,448,1116],[40,376,616],[32,304,366],[28,268,241],[24,232,116]];' +
      'function _cix(o){return o<=10?10:o<=15?9:o<=20?8:o<=25?6:o<=30?4:o<=35?2:0}' + s2;
+
+// 接收端生命周期补丁：所有异步扫描动作共享会话序号，旧的 getUserMedia、RAF、worker
+// 和 GIF 任务在 Stop/切换/卸载后都不能重新接管资源或继续向 UI/FEC 写入。
+{
+  const init = 'de=I(0),we=I(0),ve=I(0),Ke=I([]),me=I(pt),Ue=I(tn),Fe=Wo(qe),N=I(Fe);';
+  if (!s2.includes(init)) throw new Error('receiver state init marker not found');
+  s2 = s2.replace(init,
+    'scanEpoch=I(0),scanStarting=I(!1),gifAck=I(null),scanScrollRaf=I(null),scanScrollTimer=I(null),' + init);
+
+  const atStart = s2.indexOf('function at(){');
+  const atEnd = s2.indexOf('const At=', atStart);
+  if (atStart < 0 || atEnd < 0) throw new Error('receiver worker handler bounds not found');
+  let atCode = s2.slice(atStart, atEnd);
+  atCode = atCode.replace('function at(){', 'function at(token){token=token==null?scanEpoch.current:token;');
+  atCode = atCode.replace('const l=T.data;switch(l.type)', 'if(token!==scanEpoch.current||d.current&&d.current!==h)return;const l=T.data;if(l.type==="frame-ack"){const a=gifAck.current;if(a){gifAck.current=null;a()}return}switch(l.type)');
+  atCode = atCode.replace('F("Complete ✓"),l.autoStop&&Je(),scanScrollRaf.current=', 'F("Complete ✓"),l.autoStop&&stopSession(),scanScrollRaf.current=');
+  atCode = atCode.replace('h.onerror=T=>{ce(`Worker error: ${T.message}`)}',
+    'h.onerror=T=>{if(token!==scanEpoch.current||d.current&&d.current!==h)return;ce(`Worker error: ${T.message}`);if(d.current===h){d.current=null;try{h.onmessage=null;h.onerror=null;h.terminate()}catch{};scanEpoch.current++}}');
+  s2 = s2.slice(0, atStart) + atCode + s2.slice(atEnd);
+
+  const stopMarker = 'const At=C(async h=>{';
+  if (!s2.includes(stopMarker)) throw new Error('receiver stop insertion marker not found');
+  const stopFn = 'const stopSession=C(status=>{scanEpoch.current++;scanStarting.current=!1;y.current=!1;v(!1);if(u.current!==null){cancelAnimationFrame(u.current);u.current=null}if(scanScrollRaf.current!==null){cancelAnimationFrame(scanScrollRaf.current);scanScrollRaf.current=null}if(scanScrollTimer.current!==null){window.clearTimeout(scanScrollTimer.current);scanScrollTimer.current=null}if(e.current){try{e.current.pause()}catch{};e.current.srcObject=null}if(f.current){try{f.current.getTracks().forEach(h=>h.stop())}catch{};f.current=null}if(d.current){const h=d.current;d.current=null;try{h.onmessage=null;h.onerror=null;h.terminate()}catch{}}if(gifAck.current){const h=gifAck.current;gifAck.current=null;try{h()}catch{}}if(status!==void 0)F(status);Z(!1);We(1)},[]),';
+  s2 = s2.replace(stopMarker, stopFn + 'At=C(async h=>{');
+
+  const start = 'Qt=C(async()=>{var h;';
+  if (!s2.includes(start)) throw new Error('receiver camera start marker not found');
+  s2 = s2.replace(start,
+    'Qt=C(async()=>{var h;if(scanStarting.current||b)return;stopSession();const token=scanEpoch.current;scanStarting.current=!0;');
+  s2 = s2.replace('!((h=navigator.mediaDevices)!=null&&h.getUserMedia)){ce(jo());return}', '!((h=navigator.mediaDevices)!=null&&h.getUserMedia)){scanStarting.current=!1;ce(jo());return}');
+  s2 = s2.replace('f.current=T;const l=T.getVideoTracks()[0];',
+    'if(token!==scanEpoch.current){try{T.getTracks().forEach(h=>h.stop())}catch{};scanStarting.current=!1;return}f.current=T;const l=T.getVideoTracks()[0];');
+  s2 = s2.replace('e.current&&(e.current.srcObject=T,await e.current.play());const g=at();',
+    'e.current&&(e.current.srcObject=T,await e.current.play());if(token!==scanEpoch.current){try{T.getTracks().forEach(h=>h.stop())}catch{};if(e.current)e.current.srcObject=null;scanStarting.current=!1;return}const g=at(token);');
+  s2 = s2.replace('}),d.current=g,v(!0),y.current=!0,F("Scanning…");let x=0;const E=z=>{y.current&&(z-x>=N.current&&(Bt(),x=z),u.current=requestAnimationFrame(E))};u.current=requestAnimationFrame(E)}catch(T){ce(`Camera error: ${T.message??String(T)}`)}',
+    '}),d.current=g,v(!0),y.current=!0,scanStarting.current=!1,F("Scanning…");let x=0;const E=z=>{if(token!==scanEpoch.current||!y.current){u.current=null;return}if(z-x>=N.current){Bt();x=z}u.current=requestAnimationFrame(E)};u.current=requestAnimationFrame(E)}catch(T){scanStarting.current=!1;stopSession();ce(`Camera error: ${T.message??String(T)}`)}');
+
+  const gifStart = 'Nt=C(async h=>{var x;';
+  if (!s2.includes(gifStart)) throw new Error('receiver GIF start marker not found');
+  s2 = s2.replace(gifStart,
+    'Nt=C(async h=>{var x;if(scanStarting.current||b)return;stopSession();const token=scanEpoch.current;scanStarting.current=!0;');
+  s2 = s2.replace('const l=(x=h.target.files)==null?void 0:x[0];if(!l)return;', 'const l=(x=h.target.files)==null?void 0:x[0];if(!l){scanStarting.current=!1;return};');
+  s2 = s2.replace('const g=at();g.postMessage({', 'const g=at(token);g.postMessage({');
+  s2 = s2.replace('for(let P=0;P<L.frames.length&&y.current;P++){const M=Do(L,P),W=M.buffer.slice(M.byteOffset,M.byteOffset+M.byteLength);g.postMessage({type:"frame",pixels:W,width:L.width,height:L.height},[W])}F("GIF processed")',
+    'for(let P=0;P<L.frames.length&&y.current&&token===scanEpoch.current;P++){const M=Do(L,P),W=M.buffer.slice(M.byteOffset,M.byteOffset+M.byteLength);await new Promise((resolve,reject)=>{let done=!1;const timer=window.setTimeout(()=>{if(done)return;done=!0;if(gifAck.current===ack)gifAck.current=null;reject(new Error("GIF worker timeout"))},5000);const ack=()=>{if(done)return;done=!0;window.clearTimeout(timer);if(gifAck.current===ack)gifAck.current=null;resolve()};gifAck.current=ack;try{g.postMessage({type:"frame",pixels:W,width:L.width,height:L.height},[W])}catch(err){window.clearTimeout(timer);if(gifAck.current===ack)gifAck.current=null;reject(err)}})}F("GIF processed")');
+  s2 = s2.replace('}finally{y.current=!1,v(!1)}},[]),Je=',
+    '}finally{scanStarting.current=!1;y.current=!1;v(!1);if(d.current===g){d.current=null;try{g.onmessage=null;g.onerror=null;g.terminate()}catch{}}}},[]),Je=');
+  s2 = s2.replace('Je=C(()=>{v(!1),y.current=!1,cancelAnimationFrame(u.current),e.current&&(e.current.pause(),e.current.srcObject=null),f.current&&(f.current.getTracks().forEach(h=>h.stop()),f.current=null),d.current&&(d.current.terminate(),d.current=null),F("Stopped"),Z(!1),We(1)},[])',
+    'Je=C(()=>{stopSession("Stopped")},[])');
+  s2 = s2.replace('return Re(()=>()=>{cancelAnimationFrame(u.current),f.current&&f.current.getTracks().forEach(h=>h.stop()),d.current&&d.current.terminate(),s.current!==null&&window.clearTimeout(s.current)}',
+    'return Re(()=>()=>{stopSession();s.current!==null&&window.clearTimeout(s.current)}');
+  // complete 后的滚动句柄也纳入统一清理，避免卸载后闭包继续持有 DOM。
+  s2 = s2.replace('requestAnimationFrame(()=>{setTimeout(()=>{',
+    'scanScrollRaf.current=requestAnimationFrame(()=>{scanScrollRaf.current=null;scanScrollTimer.current=window.setTimeout(()=>{scanScrollTimer.current=null;');
+  s2 = s2.replace('},100)});break}case"error"', '},100)});break}case"error"');
+}
 
 // 2a. 编码器列表
 {
@@ -177,7 +268,7 @@ s2 = 'var colorSizeVar=1088,grabLast=0,grabInterval=40,progLast=0,userPickedSize
   // progress 到达时自适应抓帧间隔
   const old = 'case"progress":{$(l.totalFrames??0);';
   if (!s2.includes(old)) throw new Error('progress case not found');
-  s2 = s2.replace(old, 'case"single-code":{if(l.info){const q=l.info;F(q.format==="qr-standard"?`标准 QR ✓ · ${q.symbols||1} 码/帧`:q.stage==="single-code-ok"?`彩色 CimQR ✓ ${q.grid||"?"}×${q.grid||"?"} · ${q.symbolSize||"?"}px · ${q.informationDensity||"?"} B/码 · ${q.symbols||0} 码/帧`:q.stage==="no-anchor"?"彩色 CimQR：未找到结构锚点（调整距离/反光/对焦）":q.stage==="cell-parse-failed"||q.stage==="color-parse-failed"?`彩色 CimQR：已定位 ${q.grid||"?"}×${q.grid||"?"} 锚点，但单码图形/颜色解析失败`:"正在采样单码结构")}break}case"progress":{if(progLast){var gi=performance.now()-progLast;grabInterval=Math.max(30,Math.min(120,gi*1.3));}progLast=performance.now();$(l.totalFrames??0);');
+  s2 = s2.replace(old, 'case"single-code":{if(l.info){const q=l.info;F(q.format==="qr-standard"?`标准 QR ✓ · ${q.symbols||1} 码/帧 · ${q.source||"raw"}`:q.stage==="single-code-ok"?`彩色 CimQR ✓ ${q.grid||"?"}×${q.grid||"?"} · ${q.symbolSize||"?"}px · ${q.informationDensity||"?"} B/码 · ${q.symbols||0} 码/帧`:q.stage==="no-anchor"?"彩色 CimQR：未找到结构锚点（调整距离/反光/对焦）":q.stage==="cell-parse-failed"||q.stage==="color-parse-failed"?`彩色 CimQR：已定位 ${q.grid||"?"}×${q.grid||"?"} 锚点，但单码图形/颜色解析失败`:"正在采样单码结构")}break}case"progress":{if(progLast){var gi=performance.now()-progLast;grabInterval=Math.max(30,Math.min(120,gi*1.3));}progLast=performance.now();$(l.totalFrames??0);');
 }
 // 2e2. 彩色尺寸：xo scale 传倍率（render worker 用）+ gif 调用传 scale + UI 下拉
 {
