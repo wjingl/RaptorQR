@@ -154,6 +154,7 @@ node build_color.js   # 重新生成 RaptorQR_彩色版.html（check_*.mjs 输�
 node test/test_e2e.js      # 真实 RaptorQ 包裹包（头+CRC）端到端回路
 node test/test_codec.js    # 编解码往返 + 旋转/缩放/平移/亮度测试
 node test/test_rs_baseline.js                         # RS clean/1..15错误纠正、16错误拒绝与耗时基线（errors-only）
+node test/test_fec_header_guard.js                    # WASM 4095 / JS 256 FEC 头部上限与共享限制
 node --experimental-vm-modules test/test_accumulation.js   # 丢帧/重复包累积还原
 node --experimental-vm-modules test/test_tolerance.js       # 真实帧畸变容错套件
 node test/test_workers_vm.js / test/test_workers.js         # worker 沙箱执行验证
@@ -177,4 +178,5 @@ node test/ui_camera_e2e.js                            # synthetic-camera→假�
 - 三个 Finder 提供初始方向和尺度，TL 尺寸标记确认网格档位，BR 回字型提供第四个透视锚点，顶部/左侧 Timing 用于几何质量遥测和失锁判断。
 - 屏幕反光只作为局部质量降权/诊断信号，不把正常白色静区误判为整片反光；实际真机反光覆盖范围仍以 `phone_capture_e2e.js` fixture 验收。
 - RS(155,125,30) 继续作为彩色单帧的字节纠错层；独立基线确认 1–15 个字节错误可纠正、16 个错误拒绝，平均耗时约 1ms，远低于完整彩色采样，因此没有用未经验证的擦除算法替换它。unknown 格仍按视觉层拒绝并等待后续帧。
+- FEC 头部上限按既有路由区分：JS RLNC 的 `totalGenerations` 是代数，限制为 256；WASM RaptorQ 的 `symbolIndex=31` 路由沿用发送端 12-bit 输出包总数语义，允许到 4095。两者仍受 64 MiB 数据、1 MiB 单包、索引、去重和累计字节限制保护。
 - GIF 解析器不在本轮改动范围内；摄像头长期运行的 Start/Stop、worker、RAF、MediaStream 和 FEC 状态释放已单独回归。

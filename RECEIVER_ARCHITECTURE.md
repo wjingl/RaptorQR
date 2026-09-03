@@ -224,6 +224,7 @@ RS(155,125,30) 是 CimQR 单帧字节纠错层，最多纠正 15 个未知字节
 
 低置信度 cell 暂时不能直接接入 RS 擦除：当前 6 bit/格会跨字节，未知位到字节擦除的映射需要额外验证；实验性 errors+erasures 实现未达到纯擦除和混合错误正确性要求，已撤回，不进入生产 API。视觉层遇到 unknown 应等待后续帧，而不是把它伪装成可信 0。
 
+FEC 头部防护按两种现有路由分别执行：JS RLNC 使用 `symbolIndex=0..23`，`totalGenerations` 表示代数，接收端上限为 256；WASM RaptorQ 使用保留的 `symbolIndex=31`，其现有发送端将 12-bit `totalGenerations` 字段用于输出包总数，因此接收端允许到协议可表达的 4095。两条路径仍共同受 `dataLength`、payload 长度、generationIndex、symbolIndex、唯一包数和累计字节上限保护；这不是放宽 CRC、元数据锁定或 FEC 资源释放。
 
 
 - 包级 CRC32C；
