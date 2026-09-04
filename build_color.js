@@ -137,9 +137,12 @@ s1 = patchWorker(s1, 'decode', (code) => {
   code = code.replace('completed:!1,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}',
     'completed:!1,acceptedBytes:0,stats:{totalFrames:0,framesWithQR:0,packetsDecoded:0,packetsCRCRejected:0,packetsHeaderRejected:0,packetsMetadataRejected:0,packetsUnique:0,packetsDuplicate:0,acceptedPackets:0}}}', true);
   code = code.replace('b.dedup.add(s);const h=u.generationIndex;',
-    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s);b.acceptedBytes+=n.payload.length;const h=u.generationIndex;');
+    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s);packetStats.packetsUnique++;b.acceptedBytes+=n.payload.length;const h=u.generationIndex;');
   code = code.replace('b.dedup.add(s),b.stats.acceptedPackets++,b.receivedPackets++;',
-    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s),b.acceptedBytes+=n.payload.length,b.stats.acceptedPackets++,b.receivedPackets++;');
+    'if(b.dedup.size>=MAX_UNIQUE_PACKETS||b.acceptedBytes+n.payload.length>MAX_ACCEPTED_BYTES){disposeFec();return false}b.dedup.add(s),packetStats.packetsUnique++,b.acceptedBytes+=n.payload.length,b.stats.acceptedPackets++,b.receivedPackets++;');
+  const duplicateAnchor = 'if(b.dedup.has(s))return!0;';
+  if ((code.match(new RegExp(duplicateAnchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length !== 2) throw new Error('FEC duplicate marker count changed');
+  code = code.split(duplicateAnchor).join('if(b.dedup.has(s)){packetStats.packetsDuplicate++;return!0;}');
 
   // 进度同时携带 packet/session 统计；UI 可区分视觉候选、CRC、头部和 metadata 拒绝。
   const progressAnchor = 'acceptedPackets:r.stats.acceptedPackets,neededPackets:h,';
@@ -155,7 +158,7 @@ s1 = patchWorker(s1, 'decode', (code) => {
 
   // reset 时清空帧哈希、pendingLatest 和队列 epoch；旧异步 drain 返回后不能复活旧帧。
   code = code.split('if(n.type==="reset"){b=null,Ae=[],nr=!1,ar=!1;return}')
-             .join('if(n.type==="reset"){disposeFec(),clearDecodeQueue(),queueEpoch++,nr=!1,ar=!1,hr=!1,fhCache&&fhCache.clear();return}');
+             .join('if(n.type==="reset"){disposeFec(),clearDecodeQueue(),queueEpoch++,nr=!1,ar=!1,hr=!1,frameStats={dropped:0,coalesced:0,processed:0},packetStats={packetsDecoded:0,packetsCRCRejected:0,packetsHeaderRejected:0,packetsMetadataRejected:0};return}');
   return code;
 });
 
