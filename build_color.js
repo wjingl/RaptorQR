@@ -128,10 +128,10 @@ s1 = patchWorker(s1, 'decode', (code) => {
   if (!code.includes(wsGuard)) throw new Error('FEC ws marker not found');
   code = code.replace(wsGuard,
     'async function ws(r,n,i,ep){if(ep!==void 0&&ep!==queueEpoch)return false;if(!n||!guardHeader(n.header,n.payload&&n.payload.length)){packetStats.packetsHeaderRejected++;if(!hr){hr=!0;self.postMessage({type:"error",message:"FEC header rejected: limits or metadata invalid"})}return false}const u=ki(n.header);return $s(u)?u==="wasm-raptorq"?_s(r,n,i,ep):bs(r,n,i,ep):(lr(u),!1)}');
-  code = code.replace('function bs(r,n,i){const u=n.header;',
-    'function bs(r,n,i,ep){if(ep!==void 0&&ep!==queueEpoch)return false;const u=n.header;');
-  code = code.replace('async function _s(r,n,i){const u=n.header;',
-    'async function _s(r,n,i,ep){if(ep!==void 0&&ep!==queueEpoch)return false;const u=n.header;');
+  code = code.replace('function bs(r,n,i){const u=n.header;if(b&&((b.codec!=="js-rlnc")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed)){packetStats.packetsMetadataRejected++;return false;}',
+    'function bs(r,n,i,ep){if(ep!==void 0&&ep!==queueEpoch)return false;const u=n.header;if(b&&((b.codec!=="js-rlnc")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed)){packetStats.packetsMetadataRejected++;return false;}');
+  code = code.replace('function _s(r,n,i){const u=n.header;if(b&&((b.codec!=="wasm-raptorq")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed)){packetStats.packetsMetadataRejected++;return false;}',
+    'async function _s(r,n,i,ep){if(ep!==void 0&&ep!==queueEpoch)return false;const u=n.header;if(b&&((b.codec!=="wasm-raptorq")||b.dataLength!==u.dataLength||b.totalGenerations!==u.totalGenerations||b.symbolSize!==n.payload.length||b.isText!==u.isText||b.isCompressed!==u.compressed)){packetStats.packetsMetadataRejected++;return false;}');
   code = code.replace('completed:!1,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}',
     'completed:!1,acceptedBytes:0,stats:{totalFrames:0,framesWithQR:0,packetsDecoded:0,packetsCRCRejected:0,packetsHeaderRejected:0,packetsMetadataRejected:0,packetsUnique:0,packetsDuplicate:0,acceptedPackets:0}}}', true);
   code = code.replace('completed:!1,stats:{totalFrames:0,framesWithQR:0,acceptedPackets:0}}}',
