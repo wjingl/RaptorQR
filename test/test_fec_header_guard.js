@@ -5,8 +5,18 @@ const fs = require('node:fs');
 
 const worker = fs.readFileSync(__dirname + '/fixtures/check_decode.mjs', 'utf8');
 assert.match(worker, /MAX_GENERATIONS=256,MAX_WASM_GENERATIONS=4095/);
-assert.match(worker, /u&&u\.symbolIndex===31\?MAX_WASM_GENERATIONS:MAX_GENERATIONS/);
+assert.match(worker, /var isWasm=u&&u\.symbolIndex===31,maxGenerations=isWasm\?MAX_WASM_GENERATIONS:MAX_GENERATIONS/);
+assert.match(worker, /\(!isWasm&&u\.symbolIndex>23\)/);
 
+const queueWorker = worker;
+assert.match(queueWorker, /MAX_FRAME_BYTES=33554432,MAX_FRAME_QUEUE_BYTES=100663296/);
+assert.match(queueWorker, /pendingLatest=null/);
+assert.match(queueWorker, /frame-ack/);
+assert.match(queueWorker, /queueEpoch/);
+assert.match(queueWorker, /decodeMs/);
+assert.match(queueWorker, /MAX_FRAME_BYTES=33554432,MAX_FRAME_QUEUE_BYTES=100663296/);
+assert.match(queueWorker, /frameFitsReplacing/);
+assert.match(queueWorker, /packetStats/);
 const MAX_DATA_LENGTH = 67108864;
 const MAX_GENERATIONS = 256;
 const MAX_WASM_GENERATIONS = 4095;

@@ -226,6 +226,8 @@ RS(155,125,30) 是 CimQR 单帧字节纠错层，最多纠正 15 个未知字节
 
 FEC 头部防护按两种现有路由分别执行：JS RLNC 使用 `symbolIndex=0..23`，`totalGenerations` 表示代数，接收端上限为 256；WASM RaptorQ 使用保留的 `symbolIndex=31`，其现有发送端将 12-bit `totalGenerations` 字段用于输出包总数，因此接收端允许到协议可表达的 4095。两条路径仍共同受 `dataLength`、payload 长度、generationIndex、symbolIndex、唯一包数和累计字节上限保护；这不是放宽 CRC、元数据锁定或 FEC 资源释放。
 
+接收 worker 的帧数据路径采用有限内存的 producer/consumer 结构：实时相机使用单槽 latest-wins，非实时回放最多保留 8 个任务，同时对单帧 32 MiB、待处理帧总计 96 MiB 做硬限制。处理中帧通过 `frame-ack` 返回 `frameId`、帧龄、解码耗时、队列深度、pending 和丢弃/合并计数；`queueEpoch` 在 reset 后使尚未完成的异步解析失效。该设计借鉴 OneSend 的按需消费、及时释放和取消传播，但不改变 RaptorQR 的有损视频帧加 FEC 模型，也不承诺有序 byte stream。
+
 
 - 包级 CRC32C；
 - 包去重；
