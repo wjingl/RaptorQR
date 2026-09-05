@@ -42,6 +42,7 @@ export function CimbarReceivePage() {
   const [started, setStarted] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
+  const [compatAvailable, setCompatAvailable] = useState(false);
   const [mode, setMode] = useState('Auto');
   const [packets, setPackets] = useState(0);
   const [extractOk, setExtractOk] = useState(0);
@@ -71,8 +72,9 @@ export function CimbarReceivePage() {
           if (c.video && typeof c.video === 'object') {
             const v = { ...(c.video as Record<string, unknown>) };
             delete v.aspectRatio;
-            v.width = { ideal: 1280 };
-            v.height = { ideal: 1280 };
+            // 正方形 ideal + 高分辨率：无 aspectRatio 裁切，实际命中与官方等效的 1920x1080 高档位
+            v.width = { ideal: 1920 };
+            v.height = { ideal: 1920 };
             const advanced = Array.isArray(v.advanced) ? [...(v.advanced as unknown[])] : [];
             if (v.focusMode) { advanced.push({ focusMode: v.focusMode }); delete v.focusMode; }
             if (v.exposureMode) { advanced.push({ exposureMode: v.exposureMode }); delete v.exposureMode; }
@@ -120,6 +122,23 @@ export function CimbarReceivePage() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // 兼容版探测：存在内嵌/随包分发的官方 CameraFileCopy APK 时显示部署按钮
+  useEffect(() => {
+    fetch(cimbarFileUrl('compat/cimbar.apk'), { method: 'HEAD' })
+      .then((r) => setCompatAvailable(r.ok))
+      .catch(() => setCompatAvailable(false));
+  }, []);
+
+  const deployCompat = () => {
+    const bridge = (window as unknown as { TransferHubAndroid?: { installCimbarCompat?: () => boolean } }).TransferHubAndroid;
+    if (bridge && typeof bridge.installCimbarCompat === 'function') {
+      const ok = bridge.installCimbarCompat();
+      if (!ok) setError('兼容版部署失败，请重试；也可在系统设置中允许本应用安装应用后重试。');
+      return;
+    }
+    window.open(cimbarFileUrl('compat/cimbar.apk'), '_blank'); // 非打包环境：直接下载 APK
+  };
 
   const start = () => {
     setError('');
@@ -183,6 +202,15 @@ export function CimbarReceivePage() {
             ? <button type="button" style={S.button} onClick={start} disabled={!ready}>{ready ? '开始接收' : '引擎加载中…'}</button>
             : <button type="button" style={S.btnStop} onClick={() => window.location.reload()}>停止并重置</button>}
         </div>
+        {compatAvailable && (
+          <button
+            type="button"
+            onClick={deployCompat}
+            style={{ width: '100%', textAlign: 'left', background: '#12261a', border: '1px solid #2ea043', color: '#3fb950', borderRadius: 8, padding: '10px 14px', fontSize: 13, lineHeight: 1.5, cursor: 'pointer', marginTop: 10 }}
+          >
+            如果彩色模式无法接收，请点击此处部署兼容版（官方 CameraFileCopy 应用，安装后打开对准发送画面即可）
+          </button>
+        )}
         <div role="status" aria-live="polite" style={S.status}>{error ? '' : ready ? (started ? '扫描中：角框黄色=提取中，绿色=已锁定解码' : '引擎就绪，点击开始接收。') : '正在加载官方引擎…'}</div>
         {error && <div role="alert" style={S.warn}>⚠ {error}</div>}
       </section>
