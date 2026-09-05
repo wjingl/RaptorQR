@@ -492,6 +492,10 @@ export function ReceiverPage() {
       setError(getCameraUnavailableMessage());
       return;
     }
+    if (!window.isSecureContext) {
+      setError('无法使用摄像头：当前通过 HTTP 且非本机访问，浏览器禁止不安全页面调用摄像头。请改用 HTTPS、在本机用 localhost 访问，或使用离线接收包。');
+      return;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({

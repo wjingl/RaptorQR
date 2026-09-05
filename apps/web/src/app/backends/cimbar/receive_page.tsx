@@ -376,6 +376,10 @@ export function CimbarReceivePage() {
       setError('当前浏览器不支持摄像头。请使用 HTTPS/localhost，或改用 RaptorQR GIF 接收。');
       return;
     }
+    if (!window.isSecureContext) {
+      setError('无法使用摄像头：当前通过 HTTP 且非本机访问，浏览器禁止不安全页面调用摄像头。任选其一：① 在服务器本机用 http://localhost 访问本页；② 为站点启用 HTTPS（部署目录执行 ./deploy/gen-cert.sh 并在 config.json 开启 https）；③ 在接收设备上改用离线接收包（/receiver 下载，本机打开即 localhost）。');
+      return;
+    }
     const runtime = await checkCimbarRuntime();
     if (!runtime.available) {
       setError(`Cimbar 运行时缺少：${runtime.missing.join(', ')}`);
@@ -396,7 +400,21 @@ export function CimbarReceivePage() {
         focusMode: 'continuous',
         frameRate: { ideal: 15 },
       } as unknown as MediaTrackConstraints;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+      } catch (mediaError) {
+        const name = mediaError instanceof DOMException ? mediaError.name : '';
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+          throw new Error(window.isSecureContext
+            ? '摄像头权限被拒绝：请在浏览器地址栏重新允许摄像头后重试。'
+            : '无法使用摄像头：HTTP 页面（非本机）被浏览器禁止调用摄像头，请改用 HTTPS、localhost 或离线接收包。');
+        }
+        if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+          throw new Error('未找到可用摄像头或不满足相机参数，请检查设备后重试。');
+        }
+        throw mediaError;
+      }
       streamRef.current = stream;
       const video = videoRef.current;
       if (!video) throw new Error('摄像头预览初始化失败。');
