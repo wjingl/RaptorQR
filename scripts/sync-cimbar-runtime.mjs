@@ -27,10 +27,6 @@ const PINNED = {
   send: 'send.2026-08-21T2336.js',
   sendWorker: 'send-worker.2026-08-21T2336.js',
   recvWorker: 'recv-worker.2026-08-21T2336.js',
-  recv: 'recv.2026-08-21T2336.js',
-  zstd: 'zstd.2026-08-21T2336.js',
-  recvHtml: 'recv.html',
-  pwaRecv: 'pwa-recv.2026-08-21T2336.json',
 };
 
 await mkdir(target, { recursive: true });
