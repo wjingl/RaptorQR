@@ -96,6 +96,13 @@ export function CimbarReceivePage() {
   const runningRef = useRef(false);
   const selectedModeRef = useRef<number>(0); // 0 = auto
   const lockedModeRef = useRef(0); // confirmed mode in auto mode (official lock)
+  const counterRef = useRef(0); // camera-frame counter (official _counter)
+  const recentExtractRef = useRef(-999); // official _recentExtract (30-frame windows)
+  const recentDecodeRef = useRef(-999); // official _recentDecode
+  const [extractOk, setExtractOk] = useState(0); // 提取成功但无新数据（nodata）计数
+  const [extractFail, setExtractFail] = useState(0); // 提取失败（failed_extract）计数
+  const [lockedMode, setLockedMode] = useState(0);
+  const [xhairState, setXhairState] = useState<'idle' | 'scanning' | 'active'>('idle');
   const packetCountRef = useRef(0);
   const startedAtRef = useRef(0);
 
@@ -127,6 +134,18 @@ export function CimbarReceivePage() {
       previousCount = currentCount;
       setElapsedSec(Math.round((now - startedAtRef.current) / 1000));
     }, 500);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  // 角框状态：绿色=最近有数据包解码；黄色=正在提取但暂无新数据；白色=未识别到码区
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => {
+      const c = counterRef.current;
+      if (recentDecodeRef.current + 30 > c) setXhairState('active');
+      else if (recentExtractRef.current + 30 > c) setXhairState('scanning');
+      else setXhairState('idle');
+    }, 250);
     return () => window.clearInterval(timer);
   }, [running]);
 
@@ -237,6 +256,7 @@ export function CimbarReceivePage() {
     const dispatchFrame = (now: number): void => {
       if (stoppedRef.current) return;
       frameSeqRef.current += 1;
+      counterRef.current += 1;
       const workers = workersRef.current;
       if (workers.length === 0) return;
       if (inFlightRef.current >= MAX_FRAMES_IN_FLIGHT) return; // official "stalling"
@@ -305,6 +325,7 @@ export function CimbarReceivePage() {
     if (!sink || bytes.length === 0) return;
     if (selectedModeRef.current === 0 && lockedModeRef.current === 0) {
       lockedModeRef.current = mode; // official setMode(): lock confirmed mode in auto
+      setLockedMode(mode);
       sink.configure(mode);
     }
     packetCountRef.current += 1;
@@ -340,7 +361,14 @@ export function CimbarReceivePage() {
     setDecodedPackets(0);
     setFramesScanned(0);
     setPacketsPerSec(0);
+    setExtractOk(0);
+    setExtractFail(0);
+    setLockedMode(0);
+    setXhairState('idle');
     packetCountRef.current = 0;
+    counterRef.current = 0;
+    recentExtractRef.current = -999;
+    recentDecodeRef.current = -999;
     stoppedRef.current = true;
     runningRef.current = false;
 
@@ -358,15 +386,18 @@ export function CimbarReceivePage() {
       const sink = await CimbarSink.create();
       sinkRef.current = sink;
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          width: { min: 720, ideal: 1920 },
-          height: { min: 720, ideal: 1080 },
-          facingMode: 'environment',
-          frameRate: { ideal: 15 },
-        },
-      });
+      // 与官方 recv.js 相同的相机约束：连续对焦/曝光是近距离拍屏可解码的关键
+      // （exposureMode/focusMode 为 ImageCapture 扩展约束，运行时受支持但 DOM 类型库未收录）
+      const videoConstraints = {
+        width: { min: 720, ideal: 1920 },
+        height: { min: 720, ideal: 1080 },
+        aspectRatio: window.matchMedia('all and (orientation:landscape)').matches ? 16 / 9 : 9 / 16,
+        facingMode: 'environment',
+        exposureMode: 'continuous',
+        focusMode: 'continuous',
+        frameRate: { ideal: 15 },
+      } as unknown as MediaTrackConstraints;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
       streamRef.current = stream;
       const video = videoRef.current;
       if (!video) throw new Error('摄像头预览初始化失败。');
@@ -402,7 +433,15 @@ export function CimbarReceivePage() {
             inFlightRef.current = Math.max(0, inFlightRef.current - 1);
             const bytes = message.buff;
             const mode = message.mode;
+            if (message.nodata) {
+              recentExtractRef.current = counterRef.current; // 提取成功但无新字节（官方 _recentExtract）
+              setExtractOk((count) => count + 1);
+            } else if (message.failed_extract) {
+              setExtractFail((count) => count + 1); // 画面中未找到码区
+            }
             if (bytes && mode && typeof mode === 'number') {
+              recentExtractRef.current = counterRef.current;
+              recentDecodeRef.current = counterRef.current; // 官方 _recentDecode（绿色角框）
               handleDecodedFrame(mode, new Uint8Array(bytes));
             }
           };
@@ -513,6 +552,9 @@ export function CimbarReceivePage() {
               <span>扫描帧 <span style={S.statValue}>{framesScanned}</span></span>
               <span>数据包 <span style={S.statValue}>{decodedPackets}</span></span>
               {running && <span>速率 <span style={S.statValue}>{packetsPerSec}/s</span></span>}
+              <span>提取成功 <span style={S.statValue}>{extractOk}</span></span>
+              <span>提取失败 <span style={S.statValue}>{extractFail}</span></span>
+              <span>模式 <span style={S.statValue}>{selectedMode !== 0 ? modeLabel(selectedMode) : lockedMode !== 0 ? `已锁定 ${modeLabel(lockedMode)}` : '自动轮询'}</span></span>
               <span>已运行 <span style={S.statValue}>{formatDuration(elapsedSec)}</span></span>
               {hasDeterminateProgress && (
                 <span>进度 <span style={S.statValue}>{overallPercent.toFixed(0)}%</span></span>
@@ -524,7 +566,14 @@ export function CimbarReceivePage() {
 
       <section style={S.section}>
         <div style={S.label}>摄像头画面</div>
-        <video ref={videoRef} muted playsInline style={S.video} aria-label="Cimbar 摄像头预览" />
+        <style>{`.xhair { border-color: #e6edf3; opacity: .95; transition: border-color .2s; pointer-events: none; } .xhair.scanning { border-color: #FFFF00; } .xhair.active { border-color: #00FF00; }`}</style>
+        <div style={{ position: 'relative', maxWidth: 720, margin: '14px auto 0' }}>
+          <video ref={videoRef} muted playsInline style={{ ...S.video, margin: 0 }} aria-label="Cimbar 摄像头预览" />
+          <div className={`xhair ${xhairState}`} aria-hidden
+            style={{ position: 'absolute', top: '4%', right: '4%', width: '8%', height: '12%', borderTop: '5px solid', borderRight: '5px solid' }} />
+          <div className={`xhair ${xhairState}`} aria-hidden
+            style={{ position: 'absolute', bottom: '4%', left: '4%', width: '8%', height: '12%', borderBottom: '5px solid', borderLeft: '5px solid' }} />
+        </div>
         <canvas ref={canvasRef} hidden />
       </section>
 
