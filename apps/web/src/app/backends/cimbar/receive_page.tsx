@@ -390,15 +390,18 @@ export function CimbarReceivePage() {
       const sink = await CimbarSink.create();
       sinkRef.current = sink;
 
-      // 对齐二维码接收的相机策略：方形 ideal 分辨率、不强制裁切/放大画面；
-      // 保留连续对焦/曝光（ImageCapture 扩展约束，不影响取景，仅避免近距离拍屏失焦）
+      // 对齐二维码接收的相机策略：方形 ideal 分辨率、不强制裁切/放大画面。
+      // focusMode/exposureMode 属能力型约束，必须放 advanced（尽力而为）：
+      // 放顶层会因设备不支持直接 OverconstrainedError 导致整个 getUserMedia 失败
       const videoConstraints = {
         width: { ideal: 1280 },
         height: { ideal: 1280 },
         facingMode: 'environment',
-        exposureMode: 'continuous',
-        focusMode: 'continuous',
         frameRate: { ideal: 15 },
+        advanced: [
+          { focusMode: 'continuous' },
+          { exposureMode: 'continuous' },
+        ],
       } as unknown as MediaTrackConstraints;
       let stream: MediaStream;
       try {
@@ -410,8 +413,12 @@ export function CimbarReceivePage() {
             ? '摄像头权限被拒绝：请在浏览器地址栏重新允许摄像头后重试。'
             : '无法使用摄像头：HTTP 页面（非本机）被浏览器禁止调用摄像头，请改用 HTTPS、localhost 或离线接收包。');
         }
-        if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-          throw new Error('未找到可用摄像头或不满足相机参数，请检查设备后重试。');
+        if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+          throw new Error('未找到可用摄像头：请确认设备具备可用摄像头且未被其他应用占用。');
+        }
+        if (name === 'OverconstrainedError') {
+          const constraint = (mediaError as { constraint?: string }).constraint || '';
+          throw new Error(`相机参数不被支持${constraint ? `（${constraint}）` : ''}：请刷新页面重试；若持续出现请反馈。`);
         }
         throw mediaError;
       }
