@@ -47,6 +47,7 @@ import {
   type RaptorQPlaybackStrategy,
 } from '@raptorqr/core/sender/raptorq_playback';
 import { QrWorkerPool } from '@/lib/qr_worker_pool';
+import { FileDropzone } from '@/app/components/file_dropzone';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ type CSSProps = Record<string, string | number>;
 
 const MIN_FRAME_RATE_FPS = 2;
 const MAX_FRAME_RATE_FPS = 60;
-const DEFAULT_FRAME_RATE_FPS = 30;
+const DEFAULT_FRAME_RATE_FPS = 5;
 const DEFAULT_PARALLEL_QR_COUNT: ParallelQRCount = 4;
 const PARALLEL_QR_COUNTS: ParallelQRCount[] = [1, 2, 4, 6, 8];
 const FEC_CODEC_OPTIONS: FecCodec[] = FEC_CODECS.map((codec) => codec.id);
@@ -778,13 +779,12 @@ export function SenderPage() {
     let isText: boolean;
 
     if (mode === 'text') {
-      const trimmed = text.trim();
-      if (!trimmed) { setError('Please enter some text.'); return; }
-      data = new TextEncoder().encode(trimmed).buffer as ArrayBuffer;
+      if (!text) { setError('Please enter some text.'); return; }
+      data = new TextEncoder().encode(text).buffer as ArrayBuffer;
       isText = true;
     } else {
       if (!file) { setError('Please select a file.'); return; }
-      if (file.size > 8 * 1024 * 1024) { setError('File too large. Maximum size is 8 MB.'); return; }
+      if (file.size > 50 * 1024 * 1024) { setError('文件过大：单次传输上限 50 MB。'); return; }
       data = await file.arrayBuffer();
       isText = false;
     }
@@ -1031,24 +1031,17 @@ export function SenderPage() {
             onInput={(e) => handleTextChange((e.target as HTMLTextAreaElement).value)}
           />
         ) : (
-          <div style={{ ...S.row, marginTop: 10 }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              style={S.hiddenInput}
-              onChange={handleFile}
-            />
-            <button
-              type="button"
-              style={S.btnSecondary}
+          <div style={{ marginTop: 10 }}>
+            <FileDropzone
+              file={file}
+              onFile={(nextFile) => {
+                setFile(nextFile);
+                resetOutput();
+              }}
               disabled={encodingLive}
-              onClick={handleChooseFile}
-            >
-              Choose file
-            </button>
-            <span style={S.fileName} title={file?.name ?? ''}>
-              {file ? `${file.name} · ${formatBytes(file.size)}` : 'No file selected'}
-            </span>
+              title="拖放文件到这里"
+              hint="或点击选择文件（最大 8 MB）"
+            />
           </div>
         )}
       </div>

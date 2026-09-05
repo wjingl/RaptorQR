@@ -10,7 +10,8 @@
   },
   "scripts": {
     "dev:web": "pnpm --filter @raptorqr/web dev",
-    "build": "pnpm --filter @raptorqr/fast-qr-wasm build && pnpm --filter @raptorqr/raptorq-wasm build && pnpm --filter @raptorqr/core build && pnpm --filter @raptorqr/cli build && pnpm --filter @raptorqr/web build",
+    "sync:cimbar": "node scripts/sync-cimbar-runtime.mjs",
+    "build": "pnpm sync:cimbar && pnpm --filter @raptorqr/fast-qr-wasm build && pnpm --filter @raptorqr/raptorq-wasm build && pnpm --filter @raptorqr/core build && pnpm --filter @raptorqr/cli build && pnpm --filter @raptorqr/web build",
     "test": "pnpm --filter @raptorqr/fast-qr-wasm test && pnpm --filter @raptorqr/raptorq-wasm test && pnpm --filter @raptorqr/core test && pnpm --filter @raptorqr/cli test && pnpm --filter @raptorqr/web test",
     "test:smoke": "vitest run smoke.test.ts --environment node",
     "benchmark": "vitest run benchmark.test.ts --environment happy-dom",

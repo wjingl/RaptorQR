@@ -20,6 +20,7 @@ Live demo: https://qr.linkto.host/
 * [Performance](#performance)
 * [Packages](#packages)
 * [Features](#features)
+* [Unified Transfer Hub](#unified-transfer-hub)
 * [FAQ](#faq)
 * [Development](#development)
 * [CLI](#cli)
@@ -74,6 +75,51 @@ lives in `apps/web`.
 * ZXing WASM QR scanning with configurable decoder settings
 * Parallel QR playback, live Canvas rendering, and optional GIF export
 * Adjustable QR version, ECC level, playback FPS, scan FPS, and repair overhead
+
+## Unified Transfer Hub
+
+The final web build uses one Preact/PWA interface for two independent transfer
+backends:
+
+* **RaptorQR** — standard QR symbols with RaptorQ/JS-RLNC FEC, live playback,
+  GIF export, and camera/GIF receive.
+* **Cimbar** — the color barcode backend from
+  [`libcimbar`](https://github.com/sz3/libcimbar), including its WASM encoder,
+  camera decoder worker, fountain reconstruction, and zstd decompression.
+
+Choose **Send** or **Receive** first, then choose the protocol. The old Cimbar
+HTML pages are no longer required as user entry points. The protocols remain
+intentionally separate: a RaptorQR receiver cannot decode Cimbar frames and
+vice versa.
+
+The unified UI also provides drag-and-drop file input, mobile-friendly defaults,
+accessible status announcements, explicit flashing-safety guidance, and a
+single place for pause/stop/fullscreen/result actions.
+
+Cimbar's browser runtime is pinned to `v0.6.8` and synchronized during builds:
+
+```bash
+pnpm sync:cimbar
+# or simply
+pnpm build
+```
+
+The script downloads the official `cimbar.wasm.tar.gz` release when no cached
+archive is available. To use an already downloaded/extracted release, set
+`CIMBAR_SOURCE_DIR`. The resulting assets are placed in
+`apps/web/public/cimbar` and copied into `apps/web/dist/cimbar`.
+
+### Opening the built app locally
+
+Do not double-click `apps/web/dist/index.html`; `file://` blocks the module,
+Worker, WASM and fetch requirements. After building, double-click:
+
+```text
+apps/web/dist/open-transfer-hub.bat
+```
+
+or run `python -m http.server 8080 --directory apps/web/dist` and open
+`http://127.0.0.1:8080/`.
 
 ## FAQ
 

@@ -32,3 +32,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# tool-internal state (hook/sync caches)
+.mimosa/
+.zcode/
+.v2c/
+.cache/

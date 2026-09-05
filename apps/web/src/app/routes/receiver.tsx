@@ -40,7 +40,7 @@ type DecodeRateSample = { time: number; count: number };
 
 const MIN_SCAN_RATE_FPS = 2;
 const MAX_SCAN_RATE_FPS = 60;
-const DEFAULT_SCAN_RATE_FPS = 60;
+const DEFAULT_SCAN_RATE_FPS = 30;
 const DECODE_RATE_WINDOW_MS = 1000;
 const DECODE_PRESET_OPTIONS: DecodePresetId[] = ['fast', 'balance', 'robust', 'custom'];
 const RECEIVER_FEC_CODEC_OPTIONS: ReceiverFecCodec[] = [
@@ -375,9 +375,10 @@ export function ReceiverPage() {
           }
           setStatus('Complete ✓');
 
-          // Auto-stop scanning if requested by worker
+          // Release capture resources without overwriting the successful status.
           if (msg.autoStop) {
-            stopScanning();
+            stopScanning(false);
+            setStatus('Complete ✓');
           }
 
           // Auto-scroll to result
@@ -458,6 +459,7 @@ export function ReceiverPage() {
     key: 'maxSymbols' | 'tryDownscale' | 'downscaleFactor',
     value: MaxSymbolsMode | boolean | DownscaleFactor,
   ) => {
+    setDecodePreset('custom');
     setDecodeSettings((current) => ({ ...current, [key]: value }));
   }, []);
 
@@ -543,6 +545,28 @@ export function ReceiverPage() {
     }
   }, []);
 
+  const stopScanning = useCallback((setStopped = true) => {
+    setScanning(false);
+    scanningRef.current = false;
+    cancelAnimationFrame(animRef.current);
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+    if (setStopped) setStatus('Stopped');
+    setHasZoomSupport(false);
+    setZoomLevel(1);
+  }, []);
+
   // ── Process GIF file ───────────────────────────────────────────────────
   const handleGifFile = useCallback(async (e: Event) => {
     const input = e.target as HTMLInputElement;
@@ -610,35 +634,9 @@ export function ReceiverPage() {
       setStatus('GIF processed');
     } catch (err: any) {
       setError(`GIF error: ${err.message ?? String(err)}`);
-    } finally {
-      scanningRef.current = false;
-      setScanning(false);
+      stopScanning();
     }
-  }, []);
-
-  // ── Stop scanning ──────────────────────────────────────────────────────────
-  const stopScanning = useCallback(() => {
-    setScanning(false);
-    scanningRef.current = false;
-    cancelAnimationFrame(animRef.current);
-
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.srcObject = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    if (workerRef.current) {
-      workerRef.current.terminate();
-      workerRef.current = null;
-    }
-    setStatus('Stopped');
-    setHasZoomSupport(false);
-    setZoomLevel(1);
-  }, []);
-
+  }, [stopScanning]);
 
   // ── Capture the full camera frame ─────────────────────────────────────────
   const captureFrame = useCallback(() => {
@@ -995,7 +993,7 @@ export function ReceiverPage() {
                 ▶ Start Scan
               </button>
             ) : (
-              <button style={S.btnStop} onClick={stopScanning}>
+              <button style={S.btnStop} onClick={() => stopScanning()}>
                 ■ Stop Scan
               </button>
             )}

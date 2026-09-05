@@ -54,6 +54,34 @@
         color: #8b949e;
         font-size: 13px;
       }
+      .file-warning {
+        min-height: 100vh;
+        background: #0d1117;
+        color: #f0f6fc;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .file-warning-panel {
+        width: min(560px, 100%);
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 24px;
+        background: #161b22;
+      }
+      .file-warning-panel h1 { margin: 0 0 10px; font-size: 24px; }
+      .file-warning-panel p { margin: 8px 0; color: #8b949e; line-height: 1.6; }
+      .file-warning-panel code {
+        display: block;
+        margin-top: 14px;
+        padding: 12px;
+        border-radius: 8px;
+        background: #0d1117;
+        color: #c9d1d9;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        white-space: pre-wrap;
+      }
     </style>
     <title>RaptorQR</title>
   </head>
@@ -81,6 +109,20 @@
         </section>
       </main>
     </div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if (window.location.protocol === 'file:') {
+        document.getElementById('root').innerHTML = `
+          <main class="file-warning">
+            <section class="file-warning-panel" role="alert">
+              <h1>Transfer Hub 需要通过本地网页服务打开</h1>
+              <p>直接双击 index.html 会被浏览器的 file:// 安全策略阻止模块、Worker 和 WASM 加载。</p>
+              <p>请双击同目录的 open-transfer-hub.bat，或在此目录运行下面的命令：</p>
+              <code>python -m http.server 8080</code>
+              <p>然后打开 http://127.0.0.1:8080/</p>
+            </section>
+          </main>`;
+      }
+    </script>
+    <script id="app-module" type="module" src="/src/main.tsx"></script>
   </body>
 </html>

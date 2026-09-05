@@ -8,6 +8,7 @@ import decodeWorkerUrl from '@/workers/decode.worker.ts?worker&url';
 import encodeWorkerUrl from '@/workers/encode.worker.ts?worker&url';
 import gifWorkerUrl from '@/workers/gif.worker.ts?worker&url';
 import qrRenderWorkerUrl from '@/workers/qr_render.worker.ts?worker&url';
+import { CIMBAR_FILES } from '@/app/backends/cimbar/runtime';
 
 export const APP_CACHE_NAME = 'raptorqr-v1';
 
@@ -34,6 +35,14 @@ const WORKER_ASSETS: RuntimeAsset[] = [
   { label: 'decode worker', url: decodeWorkerUrl },
   { label: 'QR render worker', url: qrRenderWorkerUrl },
   { label: 'GIF worker', url: gifWorkerUrl },
+  { label: 'Cimbar sender worker', url: `./cimbar/${CIMBAR_FILES.sendWorker}` },
+  { label: 'Cimbar receiver worker', url: `./cimbar/${CIMBAR_FILES.recvWorker}` },
+];
+
+const CIMBAR_ASSETS: RuntimeAsset[] = [
+  { label: 'Cimbar runtime', url: `./cimbar/${CIMBAR_FILES.glue}` },
+  { label: 'Cimbar WASM', url: `./cimbar/${CIMBAR_FILES.wasm}` },
+  { label: 'Cimbar sender module', url: `./cimbar/${CIMBAR_FILES.send}` },
 ];
 
 export async function registerServiceWorker(): Promise<void> {
@@ -70,11 +79,17 @@ function collectRuntimeAssets(): RuntimeAsset[] {
     ...collectLinkedDocumentAssets(),
     ...WORKER_ASSETS,
     ...WASM_ASSETS,
+    ...CIMBAR_ASSETS,
   ];
 
   const seen = new Set<string>();
   return assets.filter((asset) => {
     const absoluteUrl = new URL(asset.url, window.location.href).toString();
+    // Only cache http(s) resources. Browser extensions and other sources may
+    // inject chrome-extension:// assets into the DOM; those schemes cannot be
+    // fetched or stored through the Cache API and would block startup.
+    const protocol = new URL(absoluteUrl).protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') return false;
     if (seen.has(absoluteUrl)) return false;
     seen.add(absoluteUrl);
     asset.url = absoluteUrl;
@@ -105,6 +120,9 @@ function documentAssetLabel(link: HTMLLinkElement): string {
 }
 
 async function cacheRuntimeAsset(asset: RuntimeAsset): Promise<void> {
+  const protocol = new URL(asset.url, window.location.href).protocol;
+  if (protocol !== 'http:' && protocol !== 'https:') return;
+
   const request = new Request(asset.url, {
     cache: 'reload',
     credentials: 'same-origin',

@@ -1,0 +1,7 @@
+official sz3/libcimbar runtime v0.6.8 (pristine, unmodified)
+archive: cimbar-v0.6.8.tar.gz
+cimbar_js.2026-08-21T2336.js c18d4c47ffd9ad4b
+cimbar_js.2026-08-21T2336.wasm 019a0d79419bdee0
+send.2026-08-21T2336.js 9362a7d846088229
+send-worker.2026-08-21T2336.js 5fa739e2c4240bfc
+recv-worker.2026-08-21T2336.js ab1ddadecc6ca25a

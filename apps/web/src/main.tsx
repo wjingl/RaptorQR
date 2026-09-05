@@ -11,6 +11,11 @@ import {
   type PreloadProgress,
 } from '@/pwa/preload';
 
+if (window.location.protocol === 'file:') {
+  // The static file warning is rendered by index.html before this module loads.
+  throw new Error('Transfer Hub must be served over HTTP(S).');
+}
+
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root element');
 
