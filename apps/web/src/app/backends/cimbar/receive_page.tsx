@@ -52,7 +52,7 @@ const S = {
     alignItems: 'center',
     fontSize: 12,
     color: '#8b949e',
-    marginTop: 10,
+    marginTop: 6,
     flexWrap: 'wrap',
   } as CSSProps,
   statValue: {
@@ -386,12 +386,11 @@ export function CimbarReceivePage() {
       const sink = await CimbarSink.create();
       sinkRef.current = sink;
 
-      // 与官方 recv.js 相同的相机约束：连续对焦/曝光是近距离拍屏可解码的关键
-      // （exposureMode/focusMode 为 ImageCapture 扩展约束，运行时受支持但 DOM 类型库未收录）
+      // 对齐二维码接收的相机策略：方形 ideal 分辨率、不强制裁切/放大画面；
+      // 保留连续对焦/曝光（ImageCapture 扩展约束，不影响取景，仅避免近距离拍屏失焦）
       const videoConstraints = {
-        width: { min: 720, ideal: 1920 },
-        height: { min: 720, ideal: 1080 },
-        aspectRatio: window.matchMedia('all and (orientation:landscape)').matches ? 16 / 9 : 9 / 16,
+        width: { ideal: 1280 },
+        height: { ideal: 1280 },
         facingMode: 'environment',
         exposureMode: 'continuous',
         focusMode: 'continuous',
@@ -476,6 +475,7 @@ export function CimbarReceivePage() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const stateColor = xhairState === 'active' ? '#00FF00' : xhairState === 'scanning' ? '#FFFF00' : '#58a6ff';
   const hasDeterminateProgress = progress.length > 0;
   const overallPercent = hasDeterminateProgress
     ? Math.max(...progress.map((value) => Math.max(0, Math.min(100, value * 100))))
@@ -505,8 +505,8 @@ export function CimbarReceivePage() {
         </div>
         <div style={{ ...S.row, marginTop: 14 }}>
           {!running && !initializing
-            ? <button type="button" style={S.button} onClick={start}>开始接收</button>
-            : <button type="button" style={S.secondary} onClick={stop}>停止扫描</button>}
+            ? <button type="button" style={{ background: '#238636', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 24px', fontSize: 15, fontWeight: 600, cursor: 'pointer' }} onClick={start}>开始接收</button>
+            : <button type="button" style={{ background: '#da3633', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 24px', fontSize: 15, fontWeight: 600, cursor: 'pointer' }} onClick={stop}>停止扫描</button>}
         </div>
         <div role="status" aria-live="polite" style={S.status}>{status}</div>
         {error && <div role="alert" style={{ ...S.warning, marginTop: 10 }}>⚠ {error}</div>}
@@ -566,13 +566,41 @@ export function CimbarReceivePage() {
 
       <section style={S.section}>
         <div style={S.label}>摄像头画面</div>
-        <style>{`.xhair { border-color: #e6edf3; opacity: .95; transition: border-color .2s; pointer-events: none; } .xhair.scanning { border-color: #FFFF00; } .xhair.active { border-color: #00FF00; }`}</style>
-        <div style={{ position: 'relative', maxWidth: 720, margin: '14px auto 0' }}>
-          <video ref={videoRef} muted playsInline style={{ ...S.video, margin: 0 }} aria-label="Cimbar 摄像头预览" />
-          <div className={`xhair ${xhairState}`} aria-hidden
-            style={{ position: 'absolute', top: '4%', right: '4%', width: '8%', height: '12%', borderTop: '5px solid', borderRight: '5px solid' }} />
-          <div className={`xhair ${xhairState}`} aria-hidden
-            style={{ position: 'absolute', bottom: '4%', left: '4%', width: '8%', height: '12%', borderBottom: '5px solid', borderLeft: '5px solid' }} />
+        <div
+          style={{ position: 'relative', display: 'inline-block', maxWidth: 480, width: '100%', marginTop: 8 }}
+          aria-label="Cimbar 摄像头预览"
+        >
+          <video ref={videoRef} muted playsInline style={{ width: '100%', borderRadius: 6, background: '#000', display: 'block' }} />
+          {/* 扫描框 + 四角正方形角标：几何与二维码接收一致；颜色为官方三态（蓝/黄/绿） */}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              border: `2px dashed ${stateColor}`,
+              borderRadius: 8,
+              pointerEvents: 'none',
+            }}
+          />
+          {([
+            ['top: 0', 'left: 0', 'borderTop', 'borderLeft'],
+            ['top: 0', 'right: 0', 'borderTop', 'borderRight'],
+            ['bottom: 0', 'left: 0', 'borderBottom', 'borderLeft'],
+            ['bottom: 0', 'right: 0', 'borderBottom', 'borderRight'],
+          ] as Array<[string, string, string, string]>).map(([posA, posB, edgeA, edgeB]) => (
+            <div
+              key={`${posA}-${posB}`}
+              style={{
+                position: 'absolute',
+                [posA.split(':')[0]]: posA.split(':')[1].trim(),
+                [posB.split(':')[0]]: posB.split(':')[1].trim(),
+                width: 16,
+                height: 16,
+                [edgeA]: `3px solid ${stateColor}`,
+                [edgeB]: `3px solid ${stateColor}`,
+                pointerEvents: 'none',
+              } as CSSProps}
+            />
+          ))}
         </div>
         <canvas ref={canvasRef} hidden />
       </section>
