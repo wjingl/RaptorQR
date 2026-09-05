@@ -61,6 +61,26 @@ export function CimbarReceivePage() {
         }
         // 官方 recv.js 以硬编码相对路径创建 Worker，重映射到运行时目录
         const NativeWorker = window.Worker;
+        // 相机约束矫正：官方 init_video 强制 aspectRatio 9:16（竖屏裁切画面）。
+        // 重映射为正方形 ideal（与二维码接收一致，保留相机原生视野不裁切），
+        // 连续对焦/曝光降级为 advanced 尽力而为（避免不支持的设备启动失败）。
+        const mediaDevices = navigator.mediaDevices;
+        const nativeGetUserMedia = mediaDevices.getUserMedia.bind(mediaDevices);
+        mediaDevices.getUserMedia = async (constraints) => {
+          const c = { ...(constraints as MediaStreamConstraints) } as MediaStreamConstraints & { video?: any };
+          if (c.video && typeof c.video === 'object') {
+            const v = { ...(c.video as Record<string, unknown>) };
+            delete v.aspectRatio;
+            v.width = { ideal: 1280 };
+            v.height = { ideal: 1280 };
+            const advanced = Array.isArray(v.advanced) ? [...(v.advanced as unknown[])] : [];
+            if (v.focusMode) { advanced.push({ focusMode: v.focusMode }); delete v.focusMode; }
+            if (v.exposureMode) { advanced.push({ exposureMode: v.exposureMode }); delete v.exposureMode; }
+            if (advanced.length) v.advanced = advanced;
+            c.video = v as MediaTrackConstraints;
+          }
+          return nativeGetUserMedia(c);
+        };
         const ShimedWorker = class extends NativeWorker {
           constructor(url: URL | string, options?: WorkerOptions) {
             const spec = String(url);
